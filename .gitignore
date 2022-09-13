@@ -12,7 +12,9 @@
 *.docx
 *.xlsx
 *.csv
-
+*cache/**/*
+tables/**/*
+figures/**/*
 tmp/**/*
 
 # explicitly allow all files in data_raw (by default)
