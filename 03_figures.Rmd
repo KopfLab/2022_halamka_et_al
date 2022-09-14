@@ -1,0 +1,139 @@
+---
+title: "Figures"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged
+    number_sections: no
+    toc: yes
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load libraries
+library(tidyverse)
+library(readxl)
+library(latex2exp)
+library(cowplot)
+
+# source all relevant scripting files
+source(file.path("scripts", "plotting_functions.R"))
+source("scripts/growth_functions.R")
+
+# global knitting options for automatic saving of all plots as .png, .pdf, and .ps
+knitr::opts_chunk$set(
+  echo = FALSE,
+  dev = c("png", "pdf", "postscript"), fig.keep = "all",
+  dev.args = list(pdf = list(encoding = "WinAnsi", useDingbats = FALSE)),
+  fig.path = file.path("figures/")
+)
+```
+
+> NOTE: please knit the `01_calculations.Rmd` notebook first to prepare the data used in this notebook.
+
+# Load experiment data
+
+```{r}
+# load experiments and samples
+experiments <- read_rds("cache/experiments.rds")
+samples <- read_rds("cache/samples.rds")
+```
+
+# Plotting constants
+
+```{r}
+pH_colors <- c("#D55E00", "#009E73", "#56B4E9", "#E69F00")
+```
+
+# Figure S1: growth curves
+
+```{r "figure_S1_growth_curves", fig.width=10, fig.height=10}
+# plotting data
+plot_growth_data <- 
+  read_rds("cache/growth_data_all.rds") %>%
+  select(sample_ID, OD_multiplier, time.hours, OD_norm) %>%
+  nest(OD_data = c(time.hours, OD_norm)) %>%
+  left_join(read_rds("cache/growth_rates_all.rds"), by = "sample_ID") %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  mutate(
+    pH_info = sprintf("pH %s", pH) %>% as.factor() %>% fct_rev(),
+    temp_info = sprintf("%s\U00B0\U0043", temperature), 
+    O2_info = sprintf("%s%% O2", paste(`% O2`)) %>% factor(levels = c("1% O2", "5% O2", "21% O2"))
+  ) 
+
+# plot
+plot_growth_data %>%
+  ggplot() + 
+  aes(x = time.hours/24, y = OD_norm, group = paste(exp_ID, rep_ID), 
+      color = O2_info, shape = factor(rep)) +
+  geom_line(data = function(df) 
+    generate_logistic_curve(df, time = time.hours, N = OD) %>% 
+      mutate(OD_norm = OD * OD_multiplier)) +
+  geom_point(data = function(df) unnest(df, OD_data), size = 3) +
+  theme_figure(text_size = 14) +
+  theme(
+    legend.position = "bottom", legend.direction = "horizontal", 
+    legend.text = element_text(size = 20)
+  ) +
+  scale_color_manual(values = pH_colors) +
+  labs(x = "Time [days]", y = "Optical Density", color = NULL) +
+  guides(shape = guide_none()) +
+  facet_grid(pH_info ~ temp_info, scales = "free") 
+```
+
+# Figure S2: growth rates
+
+```{r "figure_S2_growth_rates", fig.width=9, fig.height=5}
+# base plot
+growth_rates_plot <- 
+  ggplot() +
+  aes(x = temperature, y = growth_rate.1_day, 
+      ymin = growth_rate.1_day - growth_rate_se.1_day, 
+      ymax = growth_rate.1_day + growth_rate_se.1_day, color = pH_info) + 
+  geom_errorbar(data = function(df) filter(df, !is.na(r_se)), width = 0, show.legend = FALSE) +
+  stat_summary(geom = "line", fun = mean, size = 1) +
+  geom_point(
+    data = function(df) filter(df, !is.na(r)), 
+    map = aes(shape = factor(rep)), size = 4) +
+  labs(x = NULL, y = "growth rate (1/day)") +
+  expand_limits(y = 0) +
+  labs(x = "Temperature (\U00B0\U0043)", color = NULL) +
+  theme_figure(text_size = 14, grid = FALSE) +
+  coord_cartesian(ylim = c(0, 1.7)) +
+  guides(shape = guide_none())
+
+# data at 21% O2
+growth_rates_21_O2_plot <- growth_rates_plot %+% 
+  filter(plot_growth_data, `% O2` == 21) +
+  scale_color_manual(values = pH_colors) +
+  facet_wrap(~ O2_info) 
+
+# data across O2 gradient
+growth_rates_O2_gradient_plot <- growth_rates_plot %+% 
+  filter(plot_growth_data, pH == 5.5, temperature == 25) %+% aes(x = `% O2`) +
+  scale_color_manual(values = pH_colors[3]) + 
+  facet_wrap(~temp_info) + 
+  labs(x = latex2exp::TeX("% $O_2$ (v/v)")) 
+
+# combined plot
+plot_grid(
+  growth_rates_21_O2_plot + theme(legend.position = c(0.15, 0.85)),
+  growth_rates_O2_gradient_plot + 
+    theme(
+      legend.position = "none",
+      axis.title.y = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank()
+    ),
+  align = "h", axis = "bt",
+  rel_widths = c(4.75, 4),
+  nrow = 1
+)
+```
+
+
