@@ -23,12 +23,10 @@ source("scripts/table_functions.R")
 source("scripts/growth_functions.R")
 
 # global knitting options
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Load Data
-
-## Experiment data
+# Experiment data
 
 ```{r}
 # load experiments and samples
@@ -38,96 +36,52 @@ experiments <- read_xlsx("data/experiments.xlsx") %>%
     temperature = as.integer(temperature),
     `% O2` = as.integer(`% O2`)
   )
-samples <- read_xlsx("data/samples.xlsx")
+samples <- read_xlsx("data/samples.xlsx") %>%
+  mutate(rep = as.integer(parse_number(rep_ID)))
+experiments
+head(samples)
 
 # cache
 experiments %>% write_rds("cache/experiments.rds")
 samples %>% write_rds("cache/samples.rds")
-
-experiments
-head(samples)
 ```
 
-
-## LC data
-
-```{r}
-# load LC data and convert to long form
-lc_data <-
-  read_xlsx("data/lc_data.xlsx") %>%
-  # calculate relative amounts
-  group_by(sample_ID) %>%
-  mutate(rel_amount = area/sum(area)) %>%
-  ungroup()
-
-# cache
-lc_data %>% write_rds("cache/lc_data.rds")
-head(lc_data)
-```
-
-## GC data
+# Normalized OD
 
 ```{r}
-# load GC data
-gc_data <-
-  read_xlsx("data/gc_data.xlsx") %>%
-  # calculate relative amounts
-  group_by(sample_ID) %>%
-  mutate(rel_amount = area/sum(area)) %>%
-  ungroup() 
+# OD multipliers
+ministat_OD_scaling <- 3.96 # as per OD measurements culture tube vs. ministat
+OD_multipliers <- 
+  samples %>%
+  left_join(experiments, by = "exp_ID") %>%
+  mutate(
+    OD_multiplier = if_else(!is.na(ministat) & ministat, 1/ministat_OD_scaling, 1)
+  ) %>%
+  select(sample_ID, OD_multiplier)
 
-# cache
-gc_data %>% write_rds("cache/gc_data.rds")
-head(gc_data)
-```
-
-## Growth data
-
-```{r}
 # load growth curve data
-growth_data <- read_excel("data/growth_data.xlsx") %>%
+growth_data_all <- read_excel("data/growth_data.xlsx") %>%
+  left_join(OD_multipliers, by = "sample_ID") %>%
   mutate(
     growth_phase = case_when(
       death_phase ~ "death",
       extended_lag ~ "long lag",
       TRUE ~ "growth"
-    )
+    ),
+    OD_norm = OD_multiplier * OD
   )
+head(growth_data_all)
 
 # cache
-growth_data %>% write_rds("cache/growth_data.rds")
-head(growth_data)
+growth_data_all %>% write_rds("cache/growth_data_all.rds")
 ```
 
-# Calculations
-
-## Relative abundances
-
-```{r}
-class_abundances <- 
-  bind_rows(lc_data, gc_data) %>%
-  arrange(sample_ID, compound_class) %>%
-  group_by(sample_ID, compound_class) %>%
-  summarize(
-    n_peaks = n(),
-    total.ug = sum(amount.ug),
-    .groups = "drop"
-  ) %>%
-  group_by(sample_ID) %>%
-  mutate(rel_amount = total.ug / sum(total.ug)) %>%
-  ungroup()
-
-# cache
-class_abundances %>% write_rds("cache/class_abundances.rds")
-head(class_abundances)
-```
-
-## Growth rates
+# Growth rates
 
 ```{r}
 # calculate growth rates
 growth_rates_all <- 
-  growth_data %>%
+  growth_data_all %>%
   filter(!death_phase, !extended_lag) %>% 
   # fit logistic equation to growth curves
   estimate_growth_curve_parameters(
@@ -140,9 +94,6 @@ growth_rates_all <-
     growth_rate.1_day = r * 24, 
     growth_rate_se.1_day = r_se * 24
   )
-
-# cache
-growth_rates_all %>% write_rds("cache/growth_rates_all.rds")
 head(growth_rates_all)
 
 # averages of biological replicates
@@ -156,32 +107,31 @@ growth_rates_avg <-
     growth_rate_sd.1_day = sd(growth_rate.1_day), 
     .groups = "drop"
   )
+head(growth_rates_avg)
 
 # cache
+growth_rates_all %>% write_rds("cache/growth_rates_all.rds")
 growth_rates_avg %>% write_rds("cache/growth_rates_avg.rds")
-head(growth_rates_avg)
 ```
 
-## Generations
+# Generations
 
 ```{r}
-# constants
-ministat_od_scaling <- 3.96 # as per OD measurements culture tube vs. ministat
-
+# extract inoculation OD
 inoc_OD <- 
   experiments %>%
   mutate(
     inoc_OD = (str_extract(inoculation, "[0-9.]+\\%") %>% parse_number())/100 * 
-      (str_extract(inoculation, "=[0-9.]+") %>% parse_number()),
-    is_ministat = !is.na(exp_notes) & str_detect(exp_notes, "ministat")
+      (str_extract(inoculation, "=[0-9.]+") %>% parse_number())
   ) %>%
-  select(exp_ID, inoc_OD, is_ministat)
+  select(exp_ID, inoc_OD)
 
+# find final OD
 final_OD <- 
-  growth_data %>%
+  growth_data_all %>%
   group_by(sample_ID) %>%
   summarize(
-    OD_end = OD[time.hours == max(time.hours[!death_phase])][1],
+    OD_end = OD_norm[time.hours == max(time.hours[!death_phase])][1],
     .groups = "drop"
   ) 
 
@@ -189,14 +139,8 @@ generations_all <-
   final_OD %>%
   left_join(select(samples, sample_ID, exp_ID), by = "sample_ID") %>%
   left_join(inoc_OD, by = "exp_ID") %>% 
-  mutate(
-    OD_multiplier = if_else(is_ministat, 1/ministat_od_scaling, 1), 
-    n_generations = log2( OD_multiplier * OD_end / inoc_OD )
-  ) %>%
+  mutate(n_generations = log2( OD_end / inoc_OD )) %>%
   select(-exp_ID)
-
-# cache
-generations_all %>% write_rds("cache/generations_all.rds")
 head(generations_all)
 
 # averages of biological replicates
@@ -210,10 +154,197 @@ generations_avg <-
     n_generations_sd = sd(n_generations),
     .groups = "drop"
   ) 
+head(generations_avg)
 
 # cache
+generations_all %>% write_rds("cache/generations_all.rds")
 generations_avg %>% write_rds("cache/generations_avg.rds")
-head(generations_avg)
 ```
 
+# GC data
+
+```{r}
+# all GC data
+gc_data_all <-
+  read_xlsx("data/gc_data.xlsx") %>%
+  # factorize compound names
+  mutate(
+    compound = as_factor(compound) %>%
+      fct_recode(
+        `14:0` = "C14:0",
+        `i15:1` = "i-C15:1 c9", `i15:1` = "i-C15:1 c?", `i15:0` = "i-C15:0", `15:0` = "C15:0",
+        `i16:0` = "i-C16:0", `16:1` = "C16:1", `16:0` = "C16:0",
+        `i17:1` = "i-C17:1 c9", `i17:0` = "i-C17:0", `17:1` = "C17:1", `17:0` = "C17:0",
+        `18:1` = "C18:1 c9", `18:1` = "C18:1 c?", `18:0` = "C18:0",
+        `19:1` = "C19:1", `20:0` = "C20:0", 
+        `1-i15:0 MAGE` = "1-i-15:0 MAGE", `2-i15:0 MAGE` = "2-i-15:0 MAGE", `1,2-i15:0 DAGE` = "iC15:0 DAGE"
+      ) %>%
+      fct_relevel(
+        "14:0", "i15:1", "i15:0", "15:0", "i16:0", "16:1", "16:0", "i17:1", 
+        "i17:0", "17:1", "17:0", "18:1", "18:0", "19:1", "20:0",
+        "1-i15:0 MAGE", "2-i15:0 MAGE", "1,2-i15:0 DAGE")
+  ) %>%
+  # sum isomers
+  group_by(sample_ID, compound, compound_class) %>%
+  summarize(area = sum(area), amount.ug = sum(amount.ug), .groups = "drop") %>%
+  # calculate relative amounts
+  group_by(sample_ID) %>%
+  mutate(rel_amount = area/sum(area)) %>%
+  ungroup() %>%
+  # complete dataset
+  complete(
+    sample_ID, nesting(compound, compound_class),  
+    fill = list(area = 0, amount.ug = 0, rel_amount = 0)
+  )
+head(gc_data_all)
+
+# averages of biological replicates
+gc_data_avg <- gc_data_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID, compound) %>%
+  summarize(
+    n_reps = n(),
+    rel_amount_mean = mean(rel_amount),
+    rel_amount_sd = sd(rel_amount),
+    .groups = "drop"
+  )
+head(gc_data_avg)
+
+# overall summary
+gc_data_sum <- gc_data_avg %>%
+  group_by(compound) %>%
+  summarize(
+    rel_amount_all = mean(rel_amount_mean),
+    rel_amount_all_sd = sd(rel_amount_mean),
+    .groups = "drop"
+  ) %>%
+  # normalize
+  mutate(rel_amount_all = rel_amount_all / sum(rel_amount_all))
+head(gc_data_sum)
+
+# cache
+gc_data_all %>% write_rds("cache/gc_data_all.rds")
+gc_data_avg %>% write_rds("cache/gc_data_avg.rds")
+gc_data_sum %>% write_rds("cache/gc_data_sum.rds")
+```
+
+# LC data
+
+```{r}
+# standard brGDGTs
+standard_brGDGTs <- paste0("brGDGT_", rep(1:3, each = 3), rep(c("a", "b", "c"), times = 3))
+
+# all LC data
+lc_data_all <-
+  read_xlsx("data/lc_data.xlsx") %>%
+  # factorize compound names
+  mutate(
+    std_brGDGT = compound %in% standard_brGDGTs,
+    compound = as_factor(compound) %>%
+      fct_recode(
+        `brGTGT Ia` = "brGTGT_1a", `brGTGT IIa` = "brGTGT_2a", `brGTGT IIIa` = "brGTGT_3a",
+        `brGDGT Ia` = "brGDGT_1a", `brGDGT Ib` = "brGDGT_1b", `brGDGT Ic` = "brGDGT_1c",
+        `brGDGT IIa` = "brGDGT_2a", `brGDGT IIb` = "brGDGT_2b", `brGDGT IIc` = "brGDGT_2c",
+        `brGDGT IIIa` = "brGDGT_3a", `brGDGT IIIb` = "brGDGT_3b", `brGDGT IIIc` = "brGDGT_3c",
+        `brGDGT IIIa-2` = "brGDGT_3a_iso",`brGDGT IIIb-2` = "brGDGT_3b-2"
+      ) %>%
+      fct_relevel("brGTGT Ia", "brGTGT IIa", "brGTGT IIIa") %>%
+      fct_relevel("brGDGT IIIa-2", "brGDGT IIIb-2", after = Inf)
+  ) %>%
+  # calculate relative amounts
+  group_by(sample_ID) %>%
+  mutate(
+    rel_amount = area/sum(area),
+    rel_br = area / sum(area[std_brGDGT])
+  ) %>%
+  ungroup() %>%
+  # complete dataset
+  complete(
+    sample_ID, nesting(compound, compound_class),  
+    fill = list(area = 0, amount.ug = 0, rel_amount = 0, rel_br = 0)
+  )
+head(lc_data_all)
+
+# averages of biological replicates
+lc_data_avg <- lc_data_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID, compound, std_brGDGT) %>%
+  summarize(
+    n_reps = n(),
+    rel_amount_mean = mean(rel_amount),
+    rel_amount_sd = sd(rel_amount),
+    rel_br_mean = mean(rel_br),
+    rel_br_sd = sd(rel_br),
+    .groups = "drop"
+  )
+head(lc_data_avg)
+
+# overall summary
+lc_data_sum <- lc_data_avg %>%
+  group_by(compound, std_brGDGT) %>%
+  summarize(
+    rel_amount_all = mean(rel_amount_mean),
+    rel_amount_all_sd = sd(rel_amount_mean),
+    rel_br_all = mean(rel_br_mean),
+    rel_br_all_sd = sd(rel_br_mean),
+    .groups = "drop"
+  ) %>%
+  # normalize
+  mutate(
+    rel_amount_all = rel_amount_all / sum(rel_amount_all),
+    rel_br_all = rel_br_all / sum(rel_br_all[std_brGDGT])
+  )
+head(lc_data_sum)
+
+# cache
+lc_data_all %>% write_rds("cache/lc_data_all.rds")
+lc_data_avg %>% write_rds("cache/lc_data_avg.rds")
+lc_data_sum %>% write_rds("cache/lc_data_sum.rds")
+```
+
+# Compound class abundances
+
+```{r}
+# calculate 
+class_abundances_all <- 
+  bind_rows(lc_data_all, gc_data_all) %>%
+  group_by(sample_ID, compound_class) %>%
+  summarize(
+    n_peaks = n(),
+    total.ug = sum(amount.ug),
+    .groups = "drop"
+  ) %>%
+  group_by(sample_ID) %>%
+  mutate(rel_amount = total.ug / sum(total.ug)) %>%
+  ungroup()
+head(class_abundances_all)
+
+# averages of biological replicates
+class_abundances_avg <- class_abundances_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID, compound_class) %>%
+  summarize(
+    rel_amount_mean = mean(rel_amount),
+    rel_amount_sd = sd(rel_amount),
+    .groups = "drop"
+  )
+head(class_abundances_avg)
+
+# overall summary
+class_abundances_sum <- class_abundances_avg %>%
+  group_by(compound_class) %>%
+  summarize(
+    rel_amount_all = mean(rel_amount_mean),
+    rel_amount_all_sd = sd(rel_amount_mean),
+    .groups = "drop"
+  ) %>%
+  # normalize
+  mutate(rel_amount_all = rel_amount_all / sum(rel_amount_all))
+head(class_abundances_sum)
+
+# cache
+class_abundances_all %>% write_rds("cache/class_abundances_all.rds")
+class_abundances_avg %>% write_rds("cache/class_abundances_avg.rds")
+class_abundances_sum %>% write_rds("cache/class_abundances_sum.rds")
+```
 
