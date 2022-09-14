@@ -1,0 +1,99 @@
+---
+title: "Tables and Datasets"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged
+    number_sections: no
+    toc: yes
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load libraries
+library(tidyverse) 
+library(readxl)
+
+# source all relevant scripting files
+source(file.path("scripts", "table_functions.R"))
+
+# global knitting options
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+> NOTE: please knit the `01_calculations.Rmd` notebook first to prepare the data used in this notebook.
+
+# Load experiment data
+
+```{r}
+# load experiments and samples
+experiments <- read_rds("cache/experiments.rds")
+samples <- read_rds("cache/samples.rds")
+```
+
+# Table S1: growth rates
+
+```{r}
+# load all data (combine growth rates and generations)
+growth_rates_all <- read_rds("cache/growth_rates_all.rds") %>%
+  left_join(
+    read_rds("cache/generations_all.rds"),
+    by = "sample_ID"
+  ) %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  mutate(rep = as.integer(parse_number(rep_ID))) %>%
+  select(sample_ID, temperature, pH, `% O2`, rep, 
+         growth_rate.1_day, growth_rate_se.1_day, 
+         n_generations) %>%
+  arrange(desc(`% O2`), temperature, pH, rep)
+  
+# load averages of biological replicates
+growth_rates_avg <- read_rds("cache/growth_rates_avg.rds") %>%
+   left_join(
+    read_rds("cache/generations_avg.rds") %>% select(-n_reps),
+    by = "exp_ID"
+  ) %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(exp_ID, temperature, pH, `% O2`, n_reps, 
+         growth_rate_mean.1_day, growth_rate_sd.1_day, 
+         n_generations_mean, n_generations_sd) %>%
+  arrange(desc(`% O2`), temperature, pH)
+
+# dataset S1
+export_to_excel(
+  growth_rates_all = growth_rates_all %>% select(-sample_ID),
+  growth_rates = growth_rates_avg %>% select(-exp_ID),
+  file = "tables/dataset_S1-growth_rates.xlsx"
+)
+
+# table S1
+table_S1 <- 
+  bind_rows(
+    growth_rates_all %>% 
+      mutate(
+        rep = as.character(rep),
+        value = sprintf("%.2f\U00B1%.2f", growth_rate.1_day, growth_rate_se.1_day)
+      ),
+    growth_rates_avg %>% 
+      mutate(
+        rep = "average", 
+        value = sprintf("%.2f\U00B1%.2f", growth_rate_mean.1_day, growth_rate_sd.1_day)
+      ),
+    growth_rates_avg %>%
+      mutate(
+        rep = "n_gens", 
+        value = sprintf("%.2f\U00B1%.2f", n_generations_mean, n_generations_sd)
+      )
+  ) %>%
+  select(temperature, pH, `% O2`, rep, value) %>%
+  pivot_wider(names_from = "rep", values_from = value) %>%
+  arrange(desc(`% O2`), temperature, pH)
+
+table_S1 %>% export_to_excel(file = "tables/table_S1_growth_rates.xlsx")
+```
+
