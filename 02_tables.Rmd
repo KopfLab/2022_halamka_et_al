@@ -22,7 +22,7 @@ library(readxl)
 source(file.path("scripts", "table_functions.R"))
 
 # global knitting options
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
 ```
 
 > NOTE: please knit the `01_calculations.Rmd` notebook first to prepare the data used in this notebook.
@@ -39,21 +39,20 @@ samples <- read_rds("cache/samples.rds")
 
 ```{r}
 # load all data (combine growth rates and generations)
-growth_rates_all <- read_rds("cache/growth_rates_all.rds") %>%
+table_growth_rates_all <- read_rds("cache/growth_rates_all.rds") %>%
   left_join(
     read_rds("cache/generations_all.rds"),
     by = "sample_ID"
   ) %>%
   left_join(samples, by = "sample_ID") %>%
   left_join(experiments, by = "exp_ID") %>%
-  mutate(rep = as.integer(parse_number(rep_ID))) %>%
   select(sample_ID, temperature, pH, `% O2`, rep, 
          growth_rate.1_day, growth_rate_se.1_day, 
          n_generations) %>%
   arrange(desc(`% O2`), temperature, pH, rep)
   
 # load averages of biological replicates
-growth_rates_avg <- read_rds("cache/growth_rates_avg.rds") %>%
+table_growth_rates_avg <- read_rds("cache/growth_rates_avg.rds") %>%
    left_join(
     read_rds("cache/generations_avg.rds") %>% select(-n_reps),
     by = "exp_ID"
@@ -66,25 +65,25 @@ growth_rates_avg <- read_rds("cache/growth_rates_avg.rds") %>%
 
 # dataset S1
 export_to_excel(
-  growth_rates_all = growth_rates_all %>% select(-sample_ID),
-  growth_rates = growth_rates_avg %>% select(-exp_ID),
+  growth_rates_all = table_growth_rates_all %>% select(-sample_ID),
+  growth_rates = table_growth_rates_avg %>% select(-exp_ID),
   file = "tables/dataset_S1-growth_rates.xlsx"
 )
 
 # table S1
 table_S1 <- 
   bind_rows(
-    growth_rates_all %>% 
+    table_growth_rates_all %>% 
       mutate(
         rep = as.character(rep),
         value = sprintf("%.2f\U00B1%.2f", growth_rate.1_day, growth_rate_se.1_day)
       ),
-    growth_rates_avg %>% 
+    table_growth_rates_avg %>% 
       mutate(
         rep = "average", 
         value = sprintf("%.2f\U00B1%.2f", growth_rate_mean.1_day, growth_rate_sd.1_day)
       ),
-    growth_rates_avg %>%
+    table_growth_rates_avg %>%
       mutate(
         rep = "n_gens", 
         value = sprintf("%.2f\U00B1%.2f", n_generations_mean, n_generations_sd)
@@ -96,4 +95,159 @@ table_S1 <-
 
 table_S1 %>% export_to_excel(file = "tables/table_S1_growth_rates.xlsx")
 ```
+
+# Table S2: membrane composition
+
+```{r}
+# load all data
+table_class_abundances_all <- read_rds("cache/class_abundances_all.rds") %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(sample_ID, temperature, pH, `% O2`, rep, rel_amount) %>%
+  arrange(desc(`% O2`), temperature, pH, rep)
+
+# load averages of biological replicates
+table_class_abundances_avg <- read_rds("cache/class_abundances_avg.rds") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(exp_ID, temperature, pH, `% O2`, compound_class, rel_amount_mean, rel_amount_sd) %>%
+  arrange(desc(`% O2`), temperature, pH, compound_class) 
+
+# load overall summary
+table_class_abundances_sum <- read_rds("cache/class_abundances_sum.rds")
+ 
+# dataset S1
+export_to_excel(
+  composition_data_all = table_class_abundances_all %>% select(-sample_ID),
+  composition_data = table_class_abundances_avg %>% select(-exp_ID),
+  composition_data_summary = table_class_abundances_sum,
+  file = "tables/dataset_S1-membrane_composition_data.xlsx"
+)
+
+# SI table
+table_S2 <- 
+  bind_rows(
+    table_class_abundances_avg %>% 
+      mutate(info = sprintf("%s\U00B0\U0043\npH %s\n%s%% O2", temperature, pH, `% O2`)) %>%
+      rename(amount = rel_amount_mean, err = rel_amount_sd),
+    table_class_abundances_sum %>% 
+      rename(amount = rel_amount_all, err = rel_amount_all_sd) %>%
+      mutate(info = "All")
+  ) %>%
+  mutate(value = sprintf("%.1f\n\U00B1%.1f", 100*amount, 100*err)) %>%
+  select(info, compound_class, value) %>%
+  pivot_wider(names_from = info, values_from = value) %>%
+  arrange(compound_class)
+table_S2 %>% export_to_excel(file = "tables/table_S2_membrane_composition_data.xlsx")
+```
+
+
+# Table S3: GC data
+
+```{r}
+# load all data
+table_gc_data_all <- read_rds("cache/gc_data_all.rds") %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(sample_ID, temperature, pH, `% O2`, rep, compound, compound_class, rel_amount) %>%
+  arrange(desc(`% O2`), temperature, pH, rep) %>%
+  filter(rel_amount > 0)
+
+# load averages of biological replicates
+table_gc_data_avg <- read_rds("cache/gc_data_avg.rds") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(exp_ID, temperature, pH, `% O2`, compound, n_reps, rel_amount_mean, rel_amount_sd) %>%
+  arrange(desc(`% O2`), temperature, pH, compound) 
+
+# load overall summary
+table_gc_data_sum <- read_rds("cache/gc_data_sum.rds")
+
+# dataset export
+export_to_excel(
+  GC_data_all = table_gc_data_all %>% select(-sample_ID),
+  GC_data = table_gc_data_avg %>% select(-exp_ID),
+  GC_data_summary = table_gc_data_sum,
+  file = "tables/dataset_S1-GC_data.xlsx"
+)
+
+# SI table
+table_S3 <- 
+  bind_rows(
+    table_gc_data_avg %>% 
+      mutate(info = sprintf("%s\U00B0\U0043\npH %s\n%s%% O2", temperature, pH, `% O2`)) %>%
+      rename(amount = rel_amount_mean, err = rel_amount_sd),
+    table_gc_data_sum %>% 
+      rename(amount = rel_amount_all, err = rel_amount_all_sd) %>%
+      mutate(info = "All")
+  ) %>%
+  mutate(
+    value = ifelse(amount < 0.01, "< 1\n", sprintf("%.1f\n\U00B1%.1f", 100*amount, 100*err))
+  ) %>%
+  select(info, compound, value) %>%
+  pivot_wider(names_from = info, values_from = value) %>%
+  arrange(compound)
+table_S3 %>% export_to_excel(file = "tables/table_S3_GC_data.xlsx")
+```
+
+# Table S4: LC data
+
+```{r}
+# load all data
+table_lc_data_all <- read_rds("cache/lc_data_all.rds") %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(sample_ID, temperature, pH, `% O2`, rep, compound, compound_class, 
+         rel_amount, rel_to_standard_brGDGTs = rel_br) %>%
+  arrange(desc(`% O2`), temperature, pH, rep)
+
+# load averages of biological replicates
+table_lc_data_avg <- read_rds("cache/lc_data_avg.rds") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(exp_ID, temperature, pH, `% O2`, compound, n_reps, 
+         rel_amount_mean, rel_amount_sd, 
+         rel_to_standard_brGDGTs_mean = rel_br_mean,
+         rel_to_standard_brGDGTs_sd = rel_br_sd) %>%
+  arrange(desc(`% O2`), temperature, pH, compound) 
+
+# load overall summary
+table_lc_data_sum <- read_rds("cache/lc_data_sum.rds") %>%
+   rename(
+     is_standard_brGDGT = std_brGDGT,
+     rel_to_standard_brGDGTs_all = rel_br_all, 
+     rel_to_standard_brGDGTs_all_sd = rel_br_all_sd
+  )
+
+# dataset export
+export_to_excel(
+  LC_data_all = table_lc_data_all %>% select(-sample_ID),
+  LC_data = table_lc_data_avg %>% select(-exp_ID),
+  LC_data_summary = table_lc_data_sum,
+  file = "tables/dataset_S1-LC_data.xlsx"
+)
+
+# SI table
+table_S4 <- 
+  bind_rows(
+    table_lc_data_avg %>% 
+      mutate(info = sprintf("%s\U00B0\U0043\npH %s\n%s%% O2", temperature, pH, `% O2`)) %>%
+      rename(amount = rel_amount_mean, err = rel_amount_sd),
+    table_lc_data_sum %>% 
+      rename(amount = rel_amount_all, err = rel_amount_all_sd) %>%
+      mutate(info = "All")
+  ) %>%
+  mutate(
+    decimals = find_signif_decimals(100*amount, 2) %>% { ifelse(. < 2, ., 2)},
+    value = 
+      ifelse(
+        dplyr::near(amount, 0), "n.q.",
+        sprintf("%%.%.0ff\n\U00B1%%.%.0ff", decimals, decimals) %>%
+          sprintf(100*amount, 100*err)
+      )
+  ) %>%
+  select(info, compound, value) %>%
+  pivot_wider(names_from = info, values_from = value) %>%
+  arrange(compound)
+table_S4 %>% export_to_excel(file = "tables/table_S4_LC_data.xlsx")
+```
+
+
 
