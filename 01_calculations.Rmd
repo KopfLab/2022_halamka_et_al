@@ -1,0 +1,219 @@
+---
+title: "Calculations"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged
+    number_sections: no
+    toc: yes
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load libraries
+library(tidyverse) 
+library(readxl)
+
+# source all relevant scripting files
+source("scripts/table_functions.R")
+source("scripts/growth_functions.R")
+
+# global knitting options
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Load Data
+
+## Experiment data
+
+```{r}
+# load experiments and samples
+experiments <- read_xlsx("data/experiments.xlsx") %>%
+  mutate( 
+    # temp and %O2 are always whole integers in this study
+    temperature = as.integer(temperature),
+    `% O2` = as.integer(`% O2`)
+  )
+samples <- read_xlsx("data/samples.xlsx")
+
+# cache
+experiments %>% write_rds("cache/experiments.rds")
+samples %>% write_rds("cache/samples.rds")
+
+experiments
+head(samples)
+```
+
+
+## LC data
+
+```{r}
+# load LC data and convert to long form
+lc_data <-
+  read_xlsx("data/lc_data.xlsx") %>%
+  # calculate relative amounts
+  group_by(sample_ID) %>%
+  mutate(rel_amount = area/sum(area)) %>%
+  ungroup()
+
+# cache
+lc_data %>% write_rds("cache/lc_data.rds")
+head(lc_data)
+```
+
+## GC data
+
+```{r}
+# load GC data
+gc_data <-
+  read_xlsx("data/gc_data.xlsx") %>%
+  # calculate relative amounts
+  group_by(sample_ID) %>%
+  mutate(rel_amount = area/sum(area)) %>%
+  ungroup() 
+
+# cache
+gc_data %>% write_rds("cache/gc_data.rds")
+head(gc_data)
+```
+
+## Growth data
+
+```{r}
+# load growth curve data
+growth_data <- read_excel("data/growth_data.xlsx") %>%
+  mutate(
+    growth_phase = case_when(
+      death_phase ~ "death",
+      extended_lag ~ "long lag",
+      TRUE ~ "growth"
+    )
+  )
+
+# cache
+growth_data %>% write_rds("cache/growth_data.rds")
+head(growth_data)
+```
+
+# Calculations
+
+## Relative abundances
+
+```{r}
+class_abundances <- 
+  bind_rows(lc_data, gc_data) %>%
+  arrange(sample_ID, compound_class) %>%
+  group_by(sample_ID, compound_class) %>%
+  summarize(
+    n_peaks = n(),
+    total.ug = sum(amount.ug),
+    .groups = "drop"
+  ) %>%
+  group_by(sample_ID) %>%
+  mutate(rel_amount = total.ug / sum(total.ug)) %>%
+  ungroup()
+
+# cache
+class_abundances %>% write_rds("cache/class_abundances.rds")
+head(class_abundances)
+```
+
+## Growth rates
+
+```{r}
+# calculate growth rates
+growth_rates_all <- 
+  growth_data %>%
+  filter(!death_phase, !extended_lag) %>% 
+  # fit logistic equation to growth curves
+  estimate_growth_curve_parameters(
+    time = time.hours,
+    N = OD,
+    group_by = c(sample_ID)
+  ) %>%
+  mutate(
+    # growth rate in 1/day
+    growth_rate.1_day = r * 24, 
+    growth_rate_se.1_day = r_se * 24
+  )
+
+# cache
+growth_rates_all %>% write_rds("cache/growth_rates_all.rds")
+head(growth_rates_all)
+
+# averages of biological replicates
+growth_rates_avg <- 
+  growth_rates_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID) %>%
+  summarize(
+    n_reps = n(),
+    growth_rate_mean.1_day = mean(growth_rate.1_day), 
+    growth_rate_sd.1_day = sd(growth_rate.1_day), 
+    .groups = "drop"
+  )
+
+# cache
+growth_rates_avg %>% write_rds("cache/growth_rates_avg.rds")
+head(growth_rates_avg)
+```
+
+## Generations
+
+```{r}
+# constants
+ministat_od_scaling <- 3.96 # as per OD measurements culture tube vs. ministat
+
+inoc_OD <- 
+  experiments %>%
+  mutate(
+    inoc_OD = (str_extract(inoculation, "[0-9.]+\\%") %>% parse_number())/100 * 
+      (str_extract(inoculation, "=[0-9.]+") %>% parse_number()),
+    is_ministat = !is.na(exp_notes) & str_detect(exp_notes, "ministat")
+  ) %>%
+  select(exp_ID, inoc_OD, is_ministat)
+
+final_OD <- 
+  growth_data %>%
+  group_by(sample_ID) %>%
+  summarize(
+    OD_end = OD[time.hours == max(time.hours[!death_phase])][1],
+    .groups = "drop"
+  ) 
+
+generations_all <- 
+  final_OD %>%
+  left_join(select(samples, sample_ID, exp_ID), by = "sample_ID") %>%
+  left_join(inoc_OD, by = "exp_ID") %>% 
+  mutate(
+    OD_multiplier = if_else(is_ministat, 1/ministat_od_scaling, 1), 
+    n_generations = log2( OD_multiplier * OD_end / inoc_OD )
+  ) %>%
+  select(-exp_ID)
+
+# cache
+generations_all %>% write_rds("cache/generations_all.rds")
+head(generations_all)
+
+# averages of biological replicates
+generations_avg <- 
+  generations_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID) %>%
+  summarize(
+    n_reps = n(),
+    n_generations_mean = mean(n_generations), 
+    n_generations_sd = sd(n_generations),
+    .groups = "drop"
+  ) 
+
+# cache
+generations_avg %>% write_rds("cache/generations_avg.rds")
+head(generations_avg)
+```
+
+
