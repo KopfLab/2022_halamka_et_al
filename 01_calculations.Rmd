@@ -201,7 +201,7 @@ head(gc_data_all)
 # averages of biological replicates
 gc_data_avg <- gc_data_all %>%
   left_join(samples, by = "sample_ID") %>%
-  group_by(exp_ID, compound) %>%
+  group_by(exp_ID, compound, compound_class) %>%
   summarize(
     n_reps = n(),
     rel_amount_mean = mean(rel_amount),
@@ -348,3 +348,235 @@ class_abundances_avg %>% write_rds("cache/class_abundances_avg.rds")
 class_abundances_sum %>% write_rds("cache/class_abundances_sum.rds")
 ```
 
+# Indices
+
+```{r}
+# derived indices
+indices_all <- lc_data_all %>% 
+  filter(std_brGDGT) %>%
+  select(sample_ID, compound, rel_br) %>%
+  mutate(compound = str_remove(compound, "brGDGT ")) %>%
+  pivot_wider(values_from = rel_br, names_from = compound) %>%
+  mutate(
+    MBT_prime_5Me = (Ia + Ib + Ic) / (Ia + Ib + Ic + IIa + IIb + IIc + IIIa),
+    CBT_5Me = - log10( (Ib + IIb) / (Ia + IIa) ),
+    DC_percent = (Ib + 2 * Ic + IIb) / (Ia + Ib + Ic + IIa + IIb) * 100
+  ) 
+head(indices_all)
+
+# averages of biological replicates
+indices_avg <- indices_all %>%
+  left_join(samples, by = "sample_ID") %>%
+  group_by(exp_ID) %>%
+  summarize(
+    n_reps = n(),
+    MBT_prime_5Me_mean = mean(MBT_prime_5Me),
+    MBT_prime_5Me_sd = sd(MBT_prime_5Me),
+    CBT_5Me_mean = mean(CBT_5Me),
+    CBT_5Me_sd = sd(CBT_5Me),
+    DC_percent_mean = mean(DC_percent),
+    DC_percent_sd = sd(DC_percent),
+    .groups = "drop"
+  )
+head(indices_avg)
+
+# cache
+indices_all %>% write_rds("cache/indices_all.rds")
+indices_avg %>% write_rds("cache/indices_avg.rds")
+```
+
+# Environmental data
+
+```{r}
+# temperature types
+ttypes <- tibble::tribble(
+  ~sample_type, ~temperature_type,
+  "Lacustrine SPM", "Water temp.",
+  "Soil", "WMT (air)",
+  "Lacustrine Sediment", "MAF (air)",
+  "Peat", "WMT (air)",
+  "Bone", "WMT (air)",
+  "Marine Sediment", "SST"
+)
+
+# environmental data
+env_data <- suppressWarnings(
+  readxl::read_excel("data/environmental_data.xlsx", 
+                     col_types = c(rep("text", 3), rep("numeric", 27))
+  )) %>%
+  mutate(
+    CBT_5Me_infinite = is.infinite(CBT_5Me),
+    CBT_5Me = ifelse(CBT_5Me_infinite, NA_real_, CBT_5Me)
+  ) %>%
+  left_join(ttypes, by = "sample_type") %>%
+  relocate(temperature_type, .after = temperature) %>%
+  relocate(CBT_5Me_infinite, .after = CBT_5Me)
+head(env_data)
+
+# cache
+env_data %>% write_rds("cache/env_data.rds")
+```
+
+# Statistics
+
+## dataset
+
+```{r}
+# culture data
+culture_regs_data <- 
+  indices_all %>%
+  left_join(
+    select(growth_rates_all, sample_ID, growth_rate.1_day), 
+    by = "sample_ID"
+  ) %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  select(sample_ID, exp_ID, MBT_prime_5Me, CBT_5Me, temperature, pH, `% O2`, `growth rate` = growth_rate.1_day) %>%
+  pivot_longer(c(MBT_prime_5Me, CBT_5Me), names_to = "index", values_to = "index_value") %>%
+  pivot_longer(c(temperature, pH, `% O2`, `growth rate`), names_to = "variable", values_to = "var_value") %>%
+  left_join(select(experiments, exp_ID, temperature, pH), by = "exp_ID") %>%
+  mutate(category = "Culture")
+
+# model fit data
+data_for_model_fits <- 
+  bind_rows(
+    # env data
+    env_data %>% 
+      select(dataset = sample_type, temperature, temperature_type, pH, MBT_prime_5Me, CBT_5Me) %>%
+      pivot_longer(c(MBT_prime_5Me, CBT_5Me), names_to = "index", values_to = "index_value") %>%
+      pivot_longer(c(temperature, pH), names_to = "variable", values_to = "var_value") %>%
+      # compare temperature with MBT and pH with CBT
+      filter((index == "MBT_prime_5Me" & variable == "temperature") | (index == "CBT_5Me" & variable == "pH")) %>%
+      # remove missing values, invalid comparisions, and outliers like MBT == 1
+      filter(
+        !is.na(index_value), !is.na(var_value), 
+        !(dplyr::near(index_value, 1) & index == "MBT_prime_5Me"),
+        !(dataset == "Marine Sediment" & variable == "pH")
+      ) %>%
+      mutate(
+        category = "Environmental",
+        variable = ifelse(variable == "temperature", temperature_type, variable)
+      ),
+    # env in situ data
+    env_data %>% 
+      filter(sample_type == "Soil") %>% 
+      select(dataset = sample_type, index_value = MBT_prime_5Me, starts_with("in situ")) %>%
+      pivot_longer(
+        cols = starts_with("in situ"), names_to = "variable", values_to = "var_value"
+      ) %>%
+      mutate(
+        index = "MBT_prime_5Me", 
+        category = "Environmental",
+      ) %>%
+      filter(!is.na(var_value)),
+    # full culture datasets
+    culture_regs_data %>%
+      filter(variable != "% O2") %>% mutate(dataset = "all data"),
+    # O2 culturedataset
+    culture_regs_data %>%
+      filter(variable == "% O2", temperature == 25, pH == 5.5) %>%
+      mutate(dataset = sprintf("%s\U00B0\U0043, pH %.1f", temperature, pH)),
+    # pH at different temps
+    culture_regs_data %>%
+      filter(variable == "pH", index == "MBT_prime_5Me") %>%
+      group_by(temperature) %>%
+      mutate(dataset = sprintf("%s\U00B0\U0043", temperature)),
+    # growth rate at different temps
+    culture_regs_data %>%
+      filter(variable == "growth rate", index == "MBT_prime_5Me") %>%
+      group_by(temperature) %>%
+      mutate(dataset = sprintf("%s\U00B0\U0043", temperature))
+  )
+```
+
+
+## calculations
+
+```{r}
+# get linear regression fits
+linear_fits <- 
+  data_for_model_fits %>%
+  nest(data = c(-category, -dataset, -variable, -index)) %>%
+  mutate(
+    n = map_int(data, nrow),
+    pearson_r = map_dbl(data, ~cor(.x$index_value, .x$var_value, method = "pearson")),
+    pearson_pval = map_dbl(data, ~cor.test(.x$index_value, .x$var_value, method = "pearson")$p.value),
+    fit = map(data, ~lm(index_value ~ var_value, data = .x)),
+    R2 = ifelse(pearson_pval < 0.05, map_dbl(fit, ~broom::glance(.x)$adj.r.squared), NA_real_),
+    params = map(fit, broom::tidy)
+  ) %>% 
+  unnest(params) %>%
+  select(-data, -fit, -statistic, -p.value) %>%
+  mutate(
+    term = factor(term) %>%
+      fct_recode(`intercept` = "(Intercept)", `slope` = "var_value"),
+    estimate = ifelse(pearson_pval < 0.05, estimate, NA_real_),
+    std.error = ifelse(pearson_pval < 0.05, std.error, NA_real_)
+  ) %>%
+  pivot_wider(
+    names_from = term,
+    values_from = c(estimate, std.error), #, p.value),
+    names_sep = "_"
+  ) %>%
+  rename(intercept = estimate_intercept, slope = estimate_slope) %>%
+  select(index, category, dataset, variable, n, pearson_r, pearson_pval, matches("slope"), matches("intercept"), R2) %>%
+  mutate()
+```
+
+## comparisons
+
+```{r}
+# differences to culture data (using dummy variable)
+culture_comparison <- 
+  inner_join(
+    data_for_model_fits %>%
+      filter(category == "Environmental") %>%
+      nest(env_data = c(-dataset, -variable, -index)),
+    data_for_model_fits %>%
+      filter(
+        category == "Culture",
+        dataset == "all data",
+        (index == "MBT_prime_5Me" & variable == "temperature") |
+          (index == "CBT_5Me" & variable == "pH")
+      ) %>% 
+      nest(culture_data = c(-index)),
+    by = "index"
+  ) %>%
+  mutate(
+    fit = map2(env_data, culture_data,
+               ~lm(index_value ~ culture + var_value + var_value * culture,
+                   data = bind_rows(
+                     mutate(.x, culture = 0), 
+                     mutate(.y, culture = 1) 
+    ))),
+    # Note: could use chow test here as well but provides less info
+    # chow_pval = map2(data, culture_data,
+    #   ~{print(nrow(.x)); print(nrow(.y)); safe_chow(.x$index, as.matrix(.x$value, ncol = 1), 
+    #                  .y$index, as.matrix(.y$value, ncol = 1))}
+    # ),
+    params = map(fit, broom::tidy)
+  ) %>% unnest(params) %>% 
+  select(-env_data, -culture_data, -fit) %>%
+  filter(str_detect(term, "culture")) %>%
+  mutate(
+    term = factor(term) %>% 
+      fct_recode(`diff_intercept` = "culture", `diff_slope` = "culture:var_value")) %>%
+  select(-statistic) %>%
+  pivot_wider(names_from = term, values_from = c(estimate, std.error, p.value), names_sep = "_") %>%
+  rename(diff_intercept = estimate_diff_intercept,  diff_slope = estimate_diff_slope) %>%
+  select(dataset, index, variable, matches("slope"), matches("intercept")) %>%
+  filter(!is.na(diff_slope))
+
+# combination
+regression_data <- 
+  linear_fits %>% 
+  left_join(culture_comparison, by = c("dataset", "index", "variable")) %>%
+  mutate(order1 = ifelse(category == "Culture", variable, dataset),
+         order2 = ifelse(category == "Culture", dataset, variable)) %>%
+  arrange(desc(index), category, order1, desc(order2)) %>%
+  select(-order1, -order2)
+head(regression_data)
+
+# caching
+regression_data %>% write_rds("cache/regression_data.rds")
+```
