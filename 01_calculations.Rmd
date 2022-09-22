@@ -580,3 +580,104 @@ head(regression_data)
 # caching
 regression_data %>% write_rds("cache/regression_data.rds")
 ```
+
+# Mass spectra
+
+```{r}
+# peaks
+peaks <- 
+  readxl::read_excel("data/mass_spectra_peaks.xlsx") %>%
+  mutate(
+    peak_join_mass = sprintf("%.1f", mass),
+    compound = as_factor(compound)
+  )
+
+# spectra
+spectra <-
+  # get unique compounds from peaks list
+  peaks %>% select(compound) %>% unique() %>%
+  # read in spectra
+  mutate(
+    data = map(compound, ~readxl::read_excel("data/mass_spectra.xlsx", sheet = as.character(.x), skip = 7))
+  ) %>%
+  unnest(data) %>%
+  # normalize
+  group_by(compound) %>%
+  mutate(rel_intensity = Intensity / max(Intensity, na.rm = TRUE)) %>%
+  # find peaks
+  mutate(signal = rel_intensity > 1e-4, peak_nr = cumsum(c(0, diff(signal)) > 0)) %>% 
+  # identify peak apex intensity
+  group_by(compound, peak_nr) %>%
+  mutate(
+    peak_rel_intensity = ifelse(peak_nr > 0, max(rel_intensity), NA_real_),
+    peak_mass = Mass[rel_intensity == peak_rel_intensity[1]][1],
+    peak_join_mass = sprintf("%.1f", peak_mass)
+  ) %>%
+  ungroup() %>%
+  # add peaks in
+  left_join(peaks, by = c("compound", "peak_join_mass")) %>%
+  # figure out peak boundaries
+  group_by(compound) %>%
+  mutate(
+    peak_id = ifelse(!signal, "no peak", peak_join_mass) %>% as_factor(),
+    peak_grp = c(0, cumsum(diff(as.integer(peak_id)))),
+    start_peak = c(0, diff(peak_grp)) != 0,
+    end_peak = c(diff(peak_grp), 0) != 0
+  ) %>% 
+  # add in peak boundary start/end points
+  {
+    bind_rows(
+      ., 
+      filter(., start_peak | end_peak) %>% mutate(rel_intensity = 0, start_peak = FALSE, end_peak = FALSE)
+    )
+  } %>% 
+  ungroup()
+  # make compound into factor
+  
+head(spectra)
+
+# caching
+spectra %>% write_rds("cache/spectra.rds")
+```
+
+# Chromatograms
+
+```{r}
+# chroms peaks
+chroms_peaks <- readxl::read_excel("data/chroms_peaks.xlsx")
+
+# retention time alignment
+calib <- chroms_peaks %>%
+  pivot_wider(names_from = sample, values_from = peak_rt) %>%
+  filter(!is.na(soil), !is.na(susi)) %>%
+  with(lm(susi ~ soil))
+
+# chromatograms
+chroms <- 
+  tibble(
+    sheet = c("susi_1050-brGDGTIIIa", "susi_1048-brGDGTIIIb", "soil_1050", "soil_1048"),
+    mass = str_extract(sheet, "[0-9]+"),
+    sample = str_extract(sheet, "^[^_]+"),
+    data = map(sheet, ~readxl::read_excel("data/chroms.xlsx", sheet = .x, skip = 3))
+  ) %>% 
+  unnest(data) %>%
+  mutate(time_join = sprintf("%.1f", Time)) %>%
+  left_join(
+    mutate(chroms_peaks, time_join = sprintf("%.1f", peak_rt)), 
+    by = c("sample", "time_join")
+  ) %>%
+  { mutate(., time_shifted = predict(calib, newdata = select(., soil = Time))) } %>%
+  mutate(time = ifelse(sample == "soil", time_shifted, Time)) %>%
+  group_by(sheet, compound, mass) %>%
+  mutate(
+    peak_intensity = ifelse(!is.na(compound), max(Intensity), NA_real_),
+    peak_rt = ifelse(!is.na(compound), time[Intensity == peak_intensity][1], NA_real_)
+  ) %>%
+  ungroup()
+
+head(chroms)
+
+# caching
+chroms %>% write_rds("cache/chroms.rds")
+```
+
