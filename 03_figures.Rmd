@@ -29,7 +29,7 @@ knitr::opts_chunk$set(
   echo = FALSE,
   dev = c("png", "pdf", "postscript"), fig.keep = "all",
   dev.args = list(pdf = list(encoding = "WinAnsi", useDingbats = FALSE)),
-  fig.path = file.path("figures/")
+  fig.path = file.path("plots/")
 )
 ```
 
@@ -51,7 +51,7 @@ pH_colors <- c("#D55E00", "#009E73", "#56B4E9", "#E69F00")
 
 # Figure S1: growth curves
 
-```{r "figure_S1_growth_curves", fig.width=10, fig.height=10}
+```{r "figure_S1_growth_curves", fig.width=10, fig.height=10, warning=FALSE}
 # plotting data
 plot_growth_data <- 
   read_rds("cache/growth_data_all.rds") %>%
@@ -88,7 +88,7 @@ plot_growth_data %>%
 
 # Figure S2: growth rates
 
-```{r "figure_S2_growth_rates", fig.width=9, fig.height=5}
+```{r "figure_S2_growth_rates", fig.width=9, fig.height=5, warning=FALSE}
 # base plot
 growth_rates_plot <- 
   ggplot() +
@@ -137,3 +137,379 @@ plot_grid(
 ```
 
 
+# Figure S3: lipid patterns
+
+```{r}
+# base plot
+base_plot_lipids <-
+  ggplot() +
+  aes(
+    y = y, ymin = y - err, ymax = y + err,
+    shape = sprintf("%s\U00B0\U0043", temperature), 
+    color = sprintf("%s\U00B0\U0043", temperature)
+  ) + 
+  geom_errorbar(data = function(df) filter(df, err > 0), width = 0, show.legend = FALSE) +
+  geom_line() + 
+  geom_point(size = 4) +
+  labs(shape = NULL, color = NULL) +
+  theme_figure(text_size = 14, grid = FALSE) +
+  facet_wrap(~panel)
+
+base_plot_lipids_21O2 <- 
+  base_plot_lipids %+% aes(x = pH) +
+  scale_color_manual(values = pH_colors[c(3,2,4,1)], drop=FALSE) +
+  scale_shape_manual(values = 15:18) +
+  labs(x = "pH")
+
+base_plot_lipids_varO2 <- 
+  base_plot_lipids %+% aes(x = `% O2`) +  
+  scale_color_manual(values = pH_colors[4], drop=FALSE) +
+  scale_shape_manual(values = 17) +
+  theme(legend.position = "none") + 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank()) +
+  labs(x = latex2exp::TeX("% $O_2$ (v/v)"))
+
+no_x <- 
+  theme(
+    axis.text.x = element_blank(), 
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+left <- theme(
+  plot.margin = margin(r = 0, unit = "npc")
+)
+right <- theme(
+  plot.margin = margin(l = 0, unit = "npc")
+)
+no_strip <- 
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+```
+
+### mono- / di-ether lipids
+
+```{r "figure_S3_monodiether_lipids", fig.width=9, fig.height=5}
+# load abundances
+plot_class_abundances_avg <- 
+  read_rds("cache/class_abundances_avg.rds") %>%
+  left_join(experiments, by = "exp_ID")
+
+# pH range
+ether_lipids_21O2_plot <- 
+  base_plot_lipids_21O2 %+%
+  ( plot_class_abundances_avg  %>%
+      filter(`% O2` == 21, compound_class == "mono/diethers") %>%
+      mutate(y = rel_amount_mean, err = rel_amount_sd,
+             panel = "21% O2")
+  ) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) +
+  labs(y = "i15:0 mono- and diethers")
+ 
+# O2 range
+ether_lipids_varO2_plot <-
+  base_plot_lipids_varO2 %+%
+  ( plot_class_abundances_avg %>%
+      filter(pH == 5.5, temperature == 25, compound_class == "mono/diethers") %>%
+      mutate(y = rel_amount_mean, err = rel_amount_sd,
+             panel = "pH 5.5")
+  ) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) 
+
+# combined plot
+monodiethers_plot <-
+  plot_grid(
+  ether_lipids_21O2_plot + 
+    theme(legend.position = "none") +
+    coord_cartesian(ylim = c(0, 0.6)) + no_x + no_strip,
+  ether_lipids_varO2_plot +
+    coord_cartesian(ylim = c(0, 0.6)) + no_x + no_strip,
+  align = "h", axis = "bt",
+  rel_widths = c(4.75, 4),
+  nrow = 1
+)
+monodiethers_plot
+```
+
+
+### tetraethers
+
+```{r "figure_S3_tetraether_lipids", fig.width=9, fig.height=5}
+# pH range
+ether_lipids_21O2_plot <- 
+  base_plot_lipids_21O2 %+%
+  ( plot_class_abundances_avg %>%
+      filter(`% O2` == 21, compound_class == "tetraethers") %>%
+      mutate(y = rel_amount_mean, err = rel_amount_sd,
+             panel = "21% O2")
+  ) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) +
+  labs(y = "tetraethers")
+ 
+# O2 range
+ether_lipids_varO2_plot <-
+  base_plot_lipids_varO2 %+%
+  ( plot_class_abundances_avg %>%
+      filter(pH == 5.5, temperature == 25, compound_class == "tetraethers") %>%
+      mutate(y = rel_amount_mean, err = rel_amount_sd,
+             panel = "pH 5.5")
+  ) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) 
+
+# combined plot
+tetraethers_plot <- 
+  plot_grid(
+  ether_lipids_21O2_plot + 
+    theme(legend.position = "none") +
+    coord_cartesian(ylim = c(0, 0.8)) + no_strip,
+  ether_lipids_varO2_plot +
+    coord_cartesian(ylim = c(0, 0.8)) + no_strip,
+  align = "h", axis = "bt",
+  rel_widths = c(4.75, 4),
+  nrow = 1
+)
+tetraethers_plot
+```
+
+### chain length
+
+```{r "figure_S3_chain_length", fig.width=9, fig.height=5}
+# data
+gc_structure_data <- 
+  read_rds("cache/gc_data_avg.rds") %>%
+  filter(compound_class == "fatty acids") %>%
+  mutate(
+    nC = str_extract(compound, "\\d+:") %>% parse_number(),
+    dbl_bonds = str_extract(compound, ":\\d") %>% parse_number(),
+    branched = str_detect(compound, "i\\d+:")
+  ) %>%
+  group_by(exp_ID) %>%
+  summarize(
+    nC = sum(nC * rel_amount_mean/sum(rel_amount_mean)),
+    dbl_bonds = sum(dbl_bonds * rel_amount_mean/sum(rel_amount_mean)),
+    .groups = "drop"
+  ) %>%
+  left_join(experiments, by = "exp_ID")
+
+chain_length_21O2_plot <- 
+  base_plot_lipids_21O2 %+%
+  ( gc_structure_data %>%
+      filter(`% O2` == 21) %>%
+      mutate(y = nC, err = 0, panel = "21% O2")
+  ) +
+  labs(y = "fatty acid chain length") 
+
+chain_length_varO2_plot <- 
+  base_plot_lipids_varO2 %+%
+  ( gc_structure_data %>%
+      filter(pH == 5.5, temperature == 25) %>%
+      mutate(y = nC, err = 0, panel = "pH 5.5")
+  ) +
+  labs(y = "fatty acid chain length")
+
+# combined plot
+chain_lengths_plot <-
+  plot_grid(
+  chain_length_21O2_plot + 
+    theme(legend.position = c(0.9, 0.8), legend.background = element_blank()) +
+    coord_cartesian(ylim = c(15.8, 17.6)) + no_x,
+  chain_length_varO2_plot +
+    coord_cartesian(ylim = c(15.8, 17.6)) + no_x,
+  align = "h", axis = "bt",
+  rel_widths = c(4.75, 4),
+  nrow = 1
+)
+chain_lengths_plot
+```
+
+### double bonds
+
+```{r "figure_S4_double_bands", fig.width=9, fig.height=5}
+dbl_bond_21O2_plot <- 
+  base_plot_lipids_21O2 %+%
+  ( gc_structure_data %>%
+      filter(`% O2` == 21) %>%
+      mutate(y = dbl_bonds, err = 0, panel = "21% O2")
+  ) +
+  labs(y = "% unsaturated fatty acids") +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) 
+
+dbl_bond_varO2_plot <- 
+  base_plot_lipids_varO2 %+%
+  ( gc_structure_data %>%
+      filter(pH == 5.5, temperature == 25) %>%
+      mutate(y = dbl_bonds, err = 0, panel = "pH 5.5")
+  ) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f %%", 100 * x)) 
+
+# combined plot
+unsaturation_plot <- 
+  plot_grid(
+  dbl_bond_21O2_plot + 
+    theme(legend.position = "none") +
+    coord_cartesian(ylim = c(0.25, 0.9)) + no_x + no_strip,
+  dbl_bond_varO2_plot +
+    coord_cartesian(ylim = c(0.25, 0.9)) + no_x + no_strip,
+  align = "h", axis = "bt",
+  rel_widths = c(4.75, 4),
+  nrow = 1
+)
+unsaturation_plot
+```
+
+### combined plot
+
+```{r "figure_S3_lipid_patterns", fig.width=9, fig.height=12, warning=FALSE}
+plot_grid(
+  chain_lengths_plot,
+  unsaturation_plot,
+  monodiethers_plot,
+  tetraethers_plot,
+  align = "v", axis = "lr",
+  ncol = 1,
+  labels = c("A", "B", "C", "D")
+)
+```
+
+# Figure S4: MBT vs. growth rate, pH, O2
+
+```{r "figure_S4_MBT_responses", fig.width=9, fig.height=8, warning=FALSE}
+# data for plot
+plot_df <- 
+  read_rds("cache/indices_all.rds") %>%
+  left_join(read_rds("cache/growth_rates_all.rds"), by = "sample_ID") %>%
+  left_join(samples, by = "sample_ID") %>%
+  left_join(experiments, by = "exp_ID") %>%
+  arrange(temperature) %>%
+  mutate(
+    temp_info = sprintf("%s\U00B0\U0043", temperature) %>% as_factor(),
+    O2_info = sprintf("%s%%", paste(`% O2`)) %>% as_factor(),
+    pH_info = factor(pH)
+  )
+
+# plot
+mbt_vs_growth_rate_plot <- plot_df %>%
+  ggplot() +
+  aes(growth_rate.1_day, MBT_prime_5Me, color = pH_info, shape = O2_info) +
+  geom_smooth(map = aes(color = NULL, shape = NULL), 
+              method = "lm", formula = y ~ x, se = TRUE, color = "black") +
+  geom_point(size = 3) +
+  theme_figure(text_size = 14, grid = FALSE) +
+  facet_wrap(~temp_info, nrow = 1) +
+  scale_color_manual(values = pH_colors) +
+  labs(x = "growth rate (1/day)", y = expression("MBT’"[5*Me]), 
+       color = "pH", shape = expression(O[2])) +
+  theme(legend.position = "bottom", legend.direction = "vertical")
+
+mbt_vs_pH_plot <- mbt_vs_growth_rate_plot %+% aes(x = pH) + labs(x = "pH")
+
+plot_grid(
+  mbt_vs_growth_rate_plot + theme(legend.position = "none"), 
+  mbt_vs_pH_plot + theme(legend.position = "none"), 
+  align = "h", axis = "lr", nrow = 2
+) %>%
+  plot_grid(get_legend(mbt_vs_growth_rate_plot), nrow = 2, rel_heights = c(0.8, 0.2))
+```
+
+# Figure S5: Mass spectra
+
+```{r "figure_S5_mass_spectra", fig.width=6, fig.height=18, warning=FALSE}
+# peak group colors
+colors <- 
+  tribble(
+    ~group,          ~rbg,
+    "common",        "#f17bb0",
+    "GTGTs",         "#eb2027",
+    "brGTGT_Ia",     "#eb2027",
+    "brGTGT_IIa",    "#00a5cc",
+    "brGTGT_IIIa-2", "#349946",
+    "brGDGT_IIIa",   "#6254a3",
+    "brGDGT_IIIa-2", "#b19ca9",
+    "brGDGT_IIIb-2", "#cf917a"
+  ) 
+
+# spectra
+plot_spectra <- read_rds("cache/spectra.rds") %>%
+  left_join(colors, by = "group") %>%
+  mutate(
+    # only use peaks deifned
+    peak_id = ifelse(is.na(rbg) | peak_id == "no peak", "no peak", peak_join_mass) %>% as_factor(),
+    rbg = ifelse(peak_id == "no peak", "black", rbg),
+  ) %>%
+  # arrange for proper path
+  arrange(compound, Mass, rbg, start_peak, desc(end_peak))
+
+# plot
+plot_spectra %>%
+  ggplot() +
+  aes(Mass, rel_intensity, color = rbg, group = peak_id) +
+  geom_path(data = . %>% filter(rbg == "black"), size = 1) +
+  geom_path(data = . %>% filter(rbg != "black"), size = 1.5) +
+  ggrepel::geom_text_repel(
+    data = . %>% 
+      filter(peak_id != "no peak") %>% 
+      group_by(compound, peak_id) %>% 
+      summarize(rel_intensity = max(peak_rel_intensity), Mass = peak_mass[1], rbg = rbg[1],
+                .groups = "drop"),
+    map = aes(label = peak_id),
+    min.segment.length = unit(0, "npc"),
+    size = 5.5
+  ) + 
+  facet_grid(compound ~ .) +
+  coord_cartesian(ylim = c(0, 0.09), xlim = c(290, 1060), expand = FALSE) +
+  scale_color_identity() +
+  scale_y_continuous(labels = function(x) sprintf("%.0f%%", x * 100), breaks = c(0, 2, 4, 6, 8)/100) +
+  scale_x_continuous(breaks = 0:10 * 200) +
+  theme_figure(grid = FALSE) +
+  theme(strip.background = element_blank(), strip.text = element_blank()) +
+  labs(y = "Relative Intensity", x = "Mass/Charge (m/z)")
+```
+
+
+# Figure S6: Chromatograms
+
+```{r, "figure_S6_chrom", fig.width=8, fig.height=6, warning=FALSE}
+# chromatograms
+read_rds("cache/chroms.rds") %>%
+  filter(time > 49.5, time < 54.5) %>%
+  group_by(sheet) %>%
+  mutate(
+    rel_intensity = Intensity / max(Intensity),
+    peak_rel_intensity = peak_intensity / max(Intensity)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    panel = sprintf("m/z %s", mass) %>% as_factor(),
+    sample = sample %>% as_factor() %>% fct_recode("S. usitatus" = "susi", "env. sample" = "soil")
+  ) %>%
+  ggplot() +
+  aes(time, rel_intensity, color = sample) +
+  geom_line(size = 1) +
+  ggrepel::geom_text_repel(
+    data = . %>% 
+      select(panel, mass, sample, compound, peak_rt, peak_rel_intensity) %>%
+      filter(!is.na(compound), 
+             (mass == "1050" & str_detect(compound, "IIIa")) |
+              (mass == "1048" & str_detect(compound, "IIIb"))) %>%
+      unique(),
+    map = aes(peak_rt, peak_rel_intensity, label = compound),
+    min.segment.length = unit(0, "npc"),
+    show.legend = FALSE, size = 5,
+    nudge_y = 0.05, nudge_x = -0.05
+  ) +
+  facet_grid(panel ~ ., scales = "free_y") +
+  scale_y_continuous(expand = c(0, 0), lim = c(0, 1.1)) +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_figure(grid = FALSE) +
+  labs(x = "Time (minutes)", y = "Relative Intensity", color = NULL) +
+  theme(
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank(),
+    legend.position = c(0.88, 0.44),
+    legend.background = element_blank()
+  ) +
+  scale_color_brewer(palette = "Set1")
+```
