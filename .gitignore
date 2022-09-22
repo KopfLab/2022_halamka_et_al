@@ -14,7 +14,7 @@
 *.csv
 *cache/**/*
 tables/**/*
-figures/**/*
+plots/**/*
 tmp/**/*
 
 # explicitly allow all files in data_raw (by default)
