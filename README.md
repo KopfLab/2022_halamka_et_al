@@ -1,6 +1,6 @@
 # Halamka et al. (2022) supplemental
 
-This repository holds data and supplementary source code to reproduce calculations and plots in *Halamka, T.A., Raberg, J. H., McFarlin, J.M., Younkin, A.D., Mulligan, C., Liu, X., Kopf, S.H. (2022) Production of diverse brGDGTs by Acidobacterium Solibacter usitatus in response to temperature, pH, and O2 provides culturing perspectives on brGDGT proxies and biosynthesis. Geobiology (in press). doi: 10.1111/gbi.12525*
+This repository holds data and supplementary source code to reproduce calculations and plots in *Halamka, T. A., Raberg, J. H., McFarlin, J. M., Younkin, A. D., Mulligan, C., Liu, X.-L., & Kopf, S. H. (2022). Production of diverse brGDGTs by Acidobacterium Solibacter usitatus in response to temperature, pH, and O2 provides a culturing perspective on brGDGT proxies and biosynthesis. Geobiology. [DOI: 10.1111/gbi.12525](https://doi.org/10.1111/gbi.12525)*
 
 ## What can I do with this code? <a href="https://creativecommons.org/licenses/by/4.0/"><img src="https://mirrors.creativecommons.org/presskit/buttons/88x31/png/by.png" align = "right" width = "100"/></a>
 
