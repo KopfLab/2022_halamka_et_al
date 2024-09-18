@@ -14,8 +14,8 @@ correct_for_min_background <- function(data_n) {
 #' 
 #' Correct for background by subtracting a constant.
 #' @inheritParams fit_logistic_curve
-correct_for_fixed_background <- function(data_n, bgrd = 0) {
-  return(data_n - bgrd)
+correct_for_fixed_background <- function(data_n, blank = 0) {
+  return(data_n - blank)
 }
 
 #' Corrects for background 
@@ -27,9 +27,9 @@ correct_for_conditional_background <- function(data_n, cond) {
   stopifnot(!missing(cond))
   stopifnot(is.logical(cond))
   stopifnot(length(cond) == 1 || length(cond) == length(data_n))
-  bgrd <- data_n[cond]
-  if (all(is.na(bgrd))) return(data_n)
-  return(data_n - mean(bgrd, na.rm = TRUE))
+  blank <- data_n[cond]
+  if (all(is.na(blank))) return(data_n)
+  return(data_n - mean(blank, na.rm = TRUE))
 }
 
 # growth phases ========
@@ -94,7 +94,9 @@ mark_death_phase <- function(df, time, N, group_by = NULL, quiet = FALSE) {
 
 #' Calculates growth curve parameters.
 #' 
-#' Uses fit_logistic_curve and extract_logistic_fit_parameters to simplify fitting logistic curves in a safe manner across multiple experiments in a data frame (pre-group before calling this function or provide the \code{group_by} parameter).
+#' Uses fit_logistic_curve and extract_logistic_fit_parameters to simplify fitting logistic/exponential curves in a safe manner across multiple experiments in a data frame (pre-group before calling this function or provide the \code{group_by} parameter).
+#' NOTE: for the exponential, this really estimates a MAX growth rate 
+#' NOTE: for micrologger just focus on the exponential fit and skip all the logistics stuff
 #' 
 #' @param df pre-grouped data frame
 #' @param time the time column
@@ -105,6 +107,7 @@ mark_death_phase <- function(df, time, N, group_by = NULL, quiet = FALSE) {
 #' @inheritParams extract_logistic_fit_parameters
 #' @param keep_fit whether to keep the nls fit as a column (NO by default if parameters are extracted, otherwise YES)
 #' @param quiet whether to provide summary information on the fits
+#' @param ... additional parameters passed to the actual fit function
 #' @return data frame with summarized growth curve parameters
 estimate_growth_curve_parameters <- function(
   df, time, N, group_by = NULL,
@@ -112,11 +115,12 @@ estimate_growth_curve_parameters <- function(
   extract_parameters = TRUE, 
   summary_select = c(n_used = "nobs", rmsd = "deviance"),
   coefficient_select = c(
-    B = "estimate_B", B_se = "std.error_B",
+    blank = "estimate_blank", blank_se = "std.error_blank",
     N0 = "estimate_N0", N0_se = "std.error_N0",
     K = "estimate_K", K_se = "std.error_K", 
     r = "estimate_r", r_se = "std.error_r"),
-  keep_fit = !extract_parameters, quiet = FALSE) {
+  keep_fit = !extract_parameters, quiet = FALSE,
+  ...) {
   
   # safety checks
   if (missing(time)) stop("specify a 'time' column", call. = FALSE)
@@ -162,7 +166,7 @@ estimate_growth_curve_parameters <- function(
       time_min = min(!!time_col), # data range min
       time_max = max(!!time_col), # data range max
       n_datapoints = length(!!N_col), # number of total data points
-      safe_fit = list(safely_fit_curve(!!time_col, !!N_col)),
+      safe_fit = list(safely_fit_curve(!!time_col, !!N_col, ...)),
       fit = map(safe_fit, ~.x$result),
       error = map_chr(safe_fit, ~{
         if (!is.null(.x$error)) .x$error$message
@@ -311,17 +315,19 @@ generate_logistic_curve <- function(df, time, N, time_min = time_min, time_max =
 
 #' Fits a an exponential curve to data.
 #'
-#' This function first uses functionality from the gcplyr package to calculate the time of the lag phase and maximum growth rate (which we denote the exponential phase) and then fits an exponential curve to this subset of the data:
-#' N(t) = N0 * exp(r * t), where
+#' This function first uses functionality from the gcplyr package to calculate the time of the lag phase and maximum growth rate (which we denote mid-exponential phase) and then fits an exponential curve to this subset of the data:
+#' N(t) = bgrd + N0 * exp(r * t), where
 #' N(t) is the number of cells (or density) at time t,
+#' bgrd is background signal from the OD reader
 #' N0 is the initial cell count or density, and
-#' r is the growth rate
+#' r is the MAX growth rate (since this focuses on the growth curve till mid exp)
 #' @param data_t    A vector of timepoints (data_n must also
 #'                  be provided and be the same length).
 #' @param data_n    A vector of cell counts or absorbance readings.
-#' @param window_width_n How many datapoints to use to calcualte derivatives
+#' @param window_width_n How many data points to use to calculate derivatives
+#' @param find_max_r_filter Filter for finding max rate, by default only rates at N that are above 10% of the max are considered.
 #' @return          An object of class nls.
-fit_exponential_curve <- function(data_t, data_n, window_width_n = 7) {
+fit_exponential_curve <- function(data_t, data_n, window_width_n = 7, find_max_r_filter = N > 0.1 * max(N)) {
   
   # safety checks
   stopifnot(
@@ -338,13 +344,15 @@ fit_exponential_curve <- function(data_t, data_n, window_width_n = 7) {
     df |>
     # make sure data is in order by time
     arrange(time) |>
-    # use first minimum to estimate background
-    mutate(bgrd = gcplyr::first_minima(N, return = "y")) |>
-    # focus on data points above the background
-    filter(N - bgrd > 0) |>
-    # calculate derivates with a 3 point window
-    # (ignore bgrd here to avoid issues with the log transform,
-    # this is just to find the 3-point avg max rate)
+    # use first minimum to estimate blank background
+    mutate(blank = gcplyr::first_minima(N, return = "y")) |>
+    # focus on data points above the blank background
+    filter(N - blank > 0) |>
+    # apply additional data filters
+    filter( {{ find_max_r_filter }}) |>
+    # calculate derivatives with an x point window
+    # (ignore blank correction here to avoid issues with the log
+    # transform, this is just to find the 3-point avg max rate)
     mutate(
       deriv_percap = gcplyr::calc_deriv(
         x = time, y = N, percapita = TRUE, blank = 0,
@@ -353,46 +361,45 @@ fit_exponential_curve <- function(data_t, data_n, window_width_n = 7) {
     ) |>
     # summarize the results
     summarise(
-      # carry through the background
-      bgrd = bgrd[1],
+      # carry through blank estimate
+      blank = blank[1],
       # estimate lag time
       lag_time = gcplyr::lag_time(
-        y = N, x = time, deriv = deriv_percap, y0 = bgrd),
+        y = N, x = time, deriv = deriv_percap, 
+        y0 = blank[1], warn_no_lag = FALSE),
       # max rate based on the above derivative
       max_r = gcplyr::max_gc(deriv_percap),
-      # where is the max? (take the full window into consideration)
-      max_r_time = time[gcplyr::which_max_gc(deriv_percap) + floor(window_width_n/2)],
-      .groups = "drop"
+      # where is mid exponential?
+      mid_exp_time = time[gcplyr::which_max_gc(deriv_percap)]
+      # NOTE: if want to consider a bigger window could include these: floor(window_width_n/2)]
+      # in practice it creates more issues than it's worth
     )
   
   # prep data
   df_exp <- df |>
     # subset dataset to focus on exponential phase
-    filter(time >= df_phases$lag_time, time <= df_phases$max_r_time) |>
-    # subtract background
-    mutate(N = N - df_phases$bgrd)
+    filter(time >= df_phases$lag_time, time <= df_phases$mid_exp_time)
 
   # nls fit
   fit <- 
     tryCatch(
       stats::nls(
-        formula = N ~ N0 * exp (r * time),#B + N0 * exp (r * time),
+        formula = N ~ blank + N0 * exp (r * time),#B + N0 * exp (r * time),
         data = df_exp, 
         #start = list(B = B_init, N0 = N0_init, r = r_init),
-        start = list(N0 = min(df_exp$N), r = df_phases$max_r),
+        start = list(blank = df_phases$blank, N0 = min(df_exp$N), r = df_phases$max_r),
         control = list(maxiter = 500),
         algorithm = "port",
-        lower = c(0, 0),
-        upper = c(max(df_exp$N), Inf),
+        lower = c(-Inf, 0, 0),
+        upper = c(0.1 * max(df_exp$N), max(df_exp$N), Inf),
       ),
       error = function(e) {
-        rlang::warn("could not fit exponential equation", parent = e)
-        rlang::abort("could not fit exponential equation", parent = e)
+        rlang::abort(paste("could not fit exponential equation:", e$message))
       }
     )
 
-  # return value
-  fit$add <- df_phases
+  # return value with added phase info (except the blank estimate, the proper one comes from NLS fit)
+  fit$add <- df_phases |> select(-"blank")
   return(fit)
 }
 
@@ -404,9 +411,9 @@ fit_exponential_curve <- function(data_t, data_n, window_width_n = 7) {
 #' @param time_min column name for start time of curve
 #' @param time_max column name for end time of curve
 #' @param N0 column name for initial populatio size (N0) parameter
-#' @param B column name for background (B) parameter
+#' @param blank column name for blank parameter
 #' @param r column name for growth rate (r) parameter
-generate_exponential_curve <- function(df, time, N, N_max = NULL, time_min = time_min, time_max = time_max, N0 = N0, bgrd = bgrd, r = r) {
+generate_exponential_curve <- function(df, time, N, N_max = NULL, time_min = time_min, time_max = time_max, N0 = N0, blank = blank, r = r) {
   
   # safety checks
   if (missing(time)) stop("specify a 'time' column", call. = FALSE)
@@ -417,14 +424,14 @@ generate_exponential_curve <- function(df, time, N, N_max = NULL, time_min = tim
   time_min_col <- rlang::enexpr(time_min)
   time_max_col <- rlang::enexpr(time_max)
   N0_col <- rlang::enexpr(N0)
-  bgrd_col <- rlang::enexpr(bgrd)
+  blank_col <- rlang::enexpr(blank)
   r_col <- rlang::enexpr(r)
   
   # if N_max is set
   if (!is.null(N_max)) {
     df <- df |>
       mutate(
-        !!time_max_col := log((!!N_max - !!bgrd_col)/(!!N0_col)) / (!!r_col)
+        !!time_max_col := log((!!N_max - !!blank_col)/(!!N0_col)) / (!!r_col)
       )
   }
   
@@ -435,7 +442,7 @@ generate_exponential_curve <- function(df, time, N, N_max = NULL, time_min = tim
     ) |>
     unnest(!!time_col) |>
     mutate(
-      !!N_col := !!bgrd_col + !!N0_col * exp (!!r_col * !!time_col)
+      !!N_col := !!blank_col + !!N0_col * exp (!!r_col * !!time_col)
     ) |> 
     filter(!is.na(!!N_col))
 }
