@@ -1,0 +1,341 @@
+---
+title: "Calculations"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document: 
+    df_print: paged
+    number_sections: no
+    toc: yes
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load libraries
+library(tidyverse) 
+library(readxl)
+
+# source all relevant scripting files
+source("scripts/table_functions.R")
+source("scripts/growth_functions.R")
+
+# global knitting options
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Experiment data
+
+```{r}
+# OD multipliers
+ministat_OD_scaling <- 3.96 # as per OD measurements culture tube vs. 
+
+# load experiments
+experiments <- read_xlsx("data/experiments_low_O2.xlsx") |>
+  mutate( 
+    # temp and %O2 are always whole integers in this study
+    temperature = as.integer(temperature),
+    `% O2` = as.integer(o2),
+    # OD multiplier depends on ministat use
+    OD_multiplier = if_else(!is.na(ministat) & ministat, 1/ministat_OD_scaling, 1)
+  )
+
+# cache
+experiments |> write_rds("cache/experiments_low_O2.rds")
+```
+
+# Normalized OD
+
+```{r}
+# load growth curve data
+growth_data_all <- 
+  read_excel("data/growth_data_low_O2.xlsx") |>
+  left_join(
+    experiments |> select(exp_ID, OD_multiplier),
+    by = "exp_ID"
+  ) |>
+  mutate(
+    growth_phase = case_when(
+      death_phase ~ "death",
+      extended_lag ~ "long lag",
+      TRUE ~ "growth"
+    ),
+    OD_norm = OD_multiplier * OD
+  )
+head(growth_data_all)
+
+# cache
+growth_data_all |> write_rds("cache/growth_data_all_low_O2.rds")
+```
+
+# Growth rates
+
+```{r}
+x <- growth_data_my |>
+  filter(replicate == "rep2", time.hours > 32*24, OD_norm < 0.5) |>
+  mutate(time.hours = time.hours - min(time.hours)) |>
+  ungroup() 
+
+x |>
+  ggplot() + aes(time.hours, log(OD_norm)) + geom_point() +
+  geom_smooth(method = nls, formula = y ~ B + K * exp (r * x), 
+              method.args = list(start = c(B = 0.1, K = 1e-5, r = 0.02)),
+              se = FALSE)
+x_growth <- x |>
+  group_by(exp_ID, replicate) |>
+  estimate_growth_curve_parameters(
+    time = time.hours,
+    N = OD_norm,
+    type = "exponential"
+  )
+x_growth
+  # with({
+  #   fit_exponential_curve(time.hours, OD_norm)
+  # }) |>
+  # extract_fit_parameters()
+  
+```
+
+# HERE
+
+```{r}
+# OD cutoff for which data to use for calculations
+#OD_cutoff <- c(0.05, 0.5)
+
+# growth data
+growth_data_my <- 
+  growth_data_all |>
+  # experiments$exp_ID |> unique() |> cat(sep = "\", \"")
+  # works
+  #filter(exp_ID %in% c("exp65", "exp66", "exp67", "exp69", "exp71")) 
+  #filter(exp_ID %in% c("exp72", "exp75", "exp76", "exp77", "exp79", "exp80"))
+  # ministat doesn't work (none of them do)
+  filter(exp_ID %in% c("exp62"))
+  # batch doesn't work
+  #filter(exp_ID %in% c("exp70", "exp73", "exp74", "exp78")) 
+  # # make sure data is in order
+  # arrange(time.hours) |>
+  # # mark which data to use for growth rate calculation
+  # # (all data before OD cutoff)
+  # mutate(
+  #   .by = c("exp_ID", "replicate"),
+  #   use_for_calcs = 
+  #     (if (sum(OD_norm < !!OD_cutoff[1]) > 0) time.hours > tail(time.hours[OD_norm < !!OD_cutoff[1]], 1)
+  #     else TRUE) &
+  #     (if (sum(OD_norm > !!OD_cutoff[2]) > 0) time.hours < time.hours[OD_norm > !!OD_cutoff[2]][1]
+  #     else TRUE)
+  # )
+
+# calculate growth rates
+growth_rates_all <- 
+  growth_data_my |>
+  #filter(use_for_calcs) |> 
+  # fit exponential equation to growth curves
+  estimate_growth_curve_parameters(
+    time = time.hours, N = OD,
+    group_by = c(exp_ID, replicate),
+    type = "exponential"
+  ) |>
+  mutate(
+    # growth rate in 1/day
+    growth_rate.1_day = r * 24, 
+    growth_rate_se.1_day = r_se * 24,
+    .after = "replicate"
+  )
+head(growth_rates_all)
+
+# averages of biological replicates
+growth_rates_avg <- 
+  growth_rates_all |>
+  filter(!is.na(r)) |>
+  summarize(
+    .by = "exp_ID",
+    n_reps = n(),
+    growth_rate_mean.1_day = mean(growth_rate.1_day), 
+    growth_rate_sd.1_day = sd(growth_rate.1_day)
+  )
+head(growth_rates_avg)
+
+# cache
+growth_rates_all |> write_rds("cache/growth_rates_all_low_O2.rds")
+growth_rates_avg |> write_rds("cache/growth_rates_avg_low_O2.rds")
+######```
+
+# Growh curves
+
+######```{r "figure_S1_growth_curves", fig.width=10, fig.height=10, warning=FALSE}
+# plotting data
+plot_growth_data <- 
+  #read_rds("cache/growth_data_all_low_O2.rds") |>
+  growth_data_my |> 
+  #x |>
+  ungroup() |>
+  select(exp_ID, replicate, time.hours, OD = OD) |>
+  nest(OD_data = c(time.hours, OD)) |>
+  #left_join(growth_rates_all, by = c("exp_ID", "replicate")) |>
+  left_join(growth_rates_all, by = c("exp_ID", "replicate")) |>
+  left_join(experiments, by = "exp_ID") |>
+  mutate(
+    pH_info = sprintf("pH %s", pH) |> as.factor() |> fct_rev(),
+    temp_info = sprintf("%s\U00B0\U0043", temperature), 
+    O2_info = sprintf("%s%% O2", paste(`% O2`)) |> factor(levels = c("1% O2", "5% O2", "21% O2"))
+  ) 
+
+# plot
+plot_growth_data |>
+  ggplot() + 
+  aes(x = time.hours/24, y = OD, group = paste(exp_ID, replicate), 
+      color = factor(replicate) #O2_info,
+    ) +
+  geom_point(data = function(df) unnest(df, OD_data), map = aes(shape = exp_ID), size = 3, alpha = 0.5) +
+  geom_line(data = function(df)
+    df |> filter(is.na(error)) |>
+    #generate_exponential_curve(time = time.hours, N = OD_norm, N_max = OD_cutoff[2]),
+    generate_exponential_curve(
+      time = time.hours, N = OD, bgrd = bgrd,
+      time_min = lag_time, time_max = max_r_time, # N_max = 0.5
+    ),
+    linewidth = 1) +
+  #geom_hline(yintercept = OD_cutoff, linetype = 2) +
+  theme_figure(text_size = 14) +
+  theme(
+    legend.position = "bottom", legend.direction = "horizontal", 
+    legend.text = element_text(size = 20)
+  ) +
+  scale_color_manual(values = pH_colors) +
+  labs(x = "Time [days]", y = "Optical Density", color = NULL) +
+  #guides(shape = guide_none()) +
+  #facet_grid(pH_info ~ temp_info, scales = "free") 
+  #facet_wrap(~exp_ID, scales = "free")
+  facet_wrap(~replicate, scales = "free_x")
+```
+
+# TEST
+
+```{r}
+library(gcplyr)
+x2 |>
+ggplot() +
+  aes(x = time.hours, y = OD, color = replicate) +
+  geom_point() +
+  facet_wrap(~replicate)
+```
+
+```{r}
+x_gr <- 
+  x |>
+  estimate_growth_curve_parameters(
+    time = time.hours, N = OD,
+    group_by = c(exp_ID, replicate),
+    type = "exponential"
+  )
+```
+
+
+
+```{r}
+x_sum <- 
+  x |>
+  # make sure data is in order
+  arrange(time.hours) |>
+  # calculate normalized density to correct for background
+  group_by(exp_ID, replicate) |>
+  mutate(min_dens = first_minima(OD, return = "y")) |>
+  # focus on data points above the first minimum
+  filter(OD - min_dens > 0) |>
+  # calculate derivates with a 3 point window
+  # (ignore blank here, this is just to find the max slope)
+  mutate(
+    deriv_percap = calc_deriv(
+      x = time.hours, y = OD, percapita = TRUE, blank = 0,
+      window_width_n = 3, trans_y = "log")
+  ) |>
+  summarise(
+    n = n(),
+    lag_time = lag_time(y = OD, x = time.hours, deriv = deriv_percap),
+    max_percap = max_gc(deriv_percap),
+    max_percap_time = time.hours[which_max_gc(deriv_percap)],
+    max_percap_dens = OD[which_max_gc(deriv_percap)],
+    min_dens = min_gc(OD),
+    .groups = "drop"
+  )
+
+x_sum
+```
+
+# TEST continued
+
+```{r}
+x_gr <- x |>
+  left_join(
+    x_sum |> select("exp_ID", "replicate", "lag_time", "max_percap_time", "min_dens"),
+    by = c("exp_ID", "replicate")
+  ) |>
+  #filter(time.hours >= lag_time, time.hours <= max_percap_time) |>
+  # fit exponential equation to growth curves
+  mutate(OD_bgrd = OD - min_dens) |>
+  estimate_growth_curve_parameters(
+    time = time.hours,
+    #N = OD_bgrd,
+    N = OD,
+    group_by = c(exp_ID, replicate),
+    type = "exponential"
+  ) |>
+  mutate(
+    # growth rate in 1/day
+    growth_rate.1_day = r * 24, 
+    growth_rate_se.1_day = r_se * 24
+  ) 
+x_gr
+```
+
+
+# Generations - NOT IMPLEMENTED YET
+
+```{r}
+# extract inoculation OD
+inoc_OD <- 
+  experiments |>
+  mutate(
+    inoc_OD = (str_extract(inoculation, "[0-9.]+\\%") |> parse_number())/100 * 
+      (str_extract(inoculation, "=[0-9.]+") |> parse_number())
+  ) |>
+  select(exp_ID, inoc_OD)
+
+# find final OD
+final_OD <- 
+  growth_data_all |>
+  group_by(sample_ID) |>
+  summarize(
+    OD_end = OD_norm[time.hours == max(time.hours[!death_phase])][1],
+    .groups = "drop"
+  ) 
+
+generations_all <- 
+  final_OD |>
+  left_join(select(samples, sample_ID, exp_ID), by = "sample_ID") |>
+  left_join(inoc_OD, by = "exp_ID") |> 
+  mutate(n_generations = log2( OD_end / inoc_OD )) |>
+  select(-exp_ID)
+head(generations_all)
+
+# averages of biological replicates
+generations_avg <- 
+  generations_all |>
+  left_join(samples, by = "sample_ID") |>
+  group_by(exp_ID) |>
+  summarize(
+    n_reps = n(),
+    n_generations_mean = mean(n_generations), 
+    n_generations_sd = sd(n_generations),
+    .groups = "drop"
+  ) 
+head(generations_avg)
+
+# cache
+generations_all |> write_rds("cache/generations_all.rds")
+generations_avg |> write_rds("cache/generations_avg.rds")
+```
+

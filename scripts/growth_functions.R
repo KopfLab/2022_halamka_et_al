@@ -1,3 +1,5 @@
+# background (used?) ======
+
 #' Corrects for background 
 #' 
 #' This function corrects a vector of cell counts or absorbance readings for the minimum value. 
@@ -20,7 +22,7 @@ correct_for_fixed_background <- function(data_n, bgrd = 0) {
 #' 
 #' Correct for background using a condition
 #' @inheritParams fit_logistic_curve
-correct_for_fixed_background <- function(data_n, cond) {
+correct_for_conditional_background <- function(data_n, cond) {
   stopifnot(!missing(data_n))
   stopifnot(!missing(cond))
   stopifnot(is.logical(cond))
@@ -29,6 +31,8 @@ correct_for_fixed_background <- function(data_n, cond) {
   if (all(is.na(bgrd))) return(data_n)
   return(data_n - mean(bgrd, na.rm = TRUE))
 }
+
+# growth phases ========
 
 #' Mark data points after the population maximum
 #' 
@@ -86,14 +90,17 @@ mark_death_phase <- function(df, time, N, group_by = NULL, quiet = FALSE) {
   return(df)
 } 
 
+# estimate growth parameters ========
+
 #' Calculates growth curve parameters.
 #' 
 #' Uses fit_logistic_curve and extract_logistic_fit_parameters to simplify fitting logistic curves in a safe manner across multiple experiments in a data frame (pre-group before calling this function or provide the \code{group_by} parameter).
 #' 
 #' @param df pre-grouped data frame
 #' @param time the time column
-#' @param N the population size column (background corrected if appropriate)
+#' @param N the population size column (subset and/or background corrected if appropriate)
 #' @param group_by what identifies an individual growth curve? use c(x, y, z) to group by multiple colums
+#' @param type what type of fit to use (logarithmic vs. exponential)
 #' @param extract_parameters whether to extract the fit parameters automatically from the fit (if TRUE, use \code{coefficient_select} and \code{summary_select} to specify extraction)
 #' @inheritParams extract_logistic_fit_parameters
 #' @param keep_fit whether to keep the nls fit as a column (NO by default if parameters are extracted, otherwise YES)
@@ -101,23 +108,27 @@ mark_death_phase <- function(df, time, N, group_by = NULL, quiet = FALSE) {
 #' @return data frame with summarized growth curve parameters
 estimate_growth_curve_parameters <- function(
   df, time, N, group_by = NULL,
+  type = c("logistic", "exponential"),
   extract_parameters = TRUE, 
-  summary_select = c(n_used = nobs, rmsd = deviance),
-  coefficient_select = c(N0 = estimate_N0, N0_se = std.error_N0,
-                         K = estimate_K, K_se = std.error_K, 
-                         r = estimate_r, r_se = std.error_r),
+  summary_select = c(n_used = "nobs", rmsd = "deviance"),
+  coefficient_select = c(
+    B = "estimate_B", B_se = "std.error_B",
+    N0 = "estimate_N0", N0_se = "std.error_N0",
+    K = "estimate_K", K_se = "std.error_K", 
+    r = "estimate_r", r_se = "std.error_r"),
   keep_fit = !extract_parameters, quiet = FALSE) {
   
   # safety checks
   if (missing(time)) stop("specify a 'time' column", call. = FALSE)
   if (missing(N)) stop("specify a population size 'N' column", call. = FALSE)
+  type <- rlang::arg_match(type)
   
   # get expressions
   time_col <- rlang::enexpr(time)
   N_col <- rlang::enexpr(N)
   
   # data frame
-  df <- df %>% filter(!is.na(!!time_col), !is.na(!!N_col))
+  df <- df |> filter(!is.na(!!time_col), !is.na(!!N_col))
   
   # grouping
   group_by_expr <- rlang::enexpr(group_by)
@@ -127,7 +138,7 @@ estimate_growth_curve_parameters <- function(
     } else {
       group_by_cols <- list(group_by_expr)
     }
-    df <- df %>% dplyr::group_by(!!!group_by_cols)
+    df <- df |> dplyr::group_by(!!!group_by_cols)
   }
   
   # info
@@ -135,20 +146,23 @@ estimate_growth_curve_parameters <- function(
     grouped_by <- ""
     if(length(grps <- dplyr::group_vars(df)) > 0) 
       grouped_by <- sprintf(" (grouped by '%s')", paste(grps, collapse = "', '"))
-    sprintf("Info: estimating growth parameters for %d growth curves%s... ", 
-            dplyr::n_groups(df), grouped_by) %>% 
+    sprintf("Info: estimating growth parameters for %d growth curves%s using %s NLS... ", 
+            dplyr::n_groups(df), grouped_by, type) |> 
       message(appendLF = FALSE)
   }
   
-  # fit logistic curve
-  safely_fit_logistic_curve <- purrr::safely(fit_logistic_curve)
+  # fit curve
+  safely_fit_curve <- 
+    if (type == "logistic") purrr::safely(fit_logistic_curve)
+    else if (type == "exponential") purrr::safely(fit_exponential_curve)
+    else rlang::abort("don't know fit type ", type)
   df_fits <-
     df %>% 
     summarize(
       time_min = min(!!time_col), # data range min
       time_max = max(!!time_col), # data range max
       n_datapoints = length(!!N_col), # number of total data points
-      safe_fit = list(safely_fit_logistic_curve(!!time_col, !!N_col)),
+      safe_fit = list(safely_fit_curve(!!time_col, !!N_col)),
       fit = map(safe_fit, ~.x$result),
       error = map_chr(safe_fit, ~{
         if (!is.null(.x$error)) .x$error$message
@@ -165,15 +179,24 @@ estimate_growth_curve_parameters <- function(
   }
   
   # extract fit parameters
-  if (extract_parameters) 
-    df_fits <- df_fits %>% 
-      mutate(params = map(
-        fit, extract_logistic_fit_parameters, 
-        summary_select = !!enquo(summary_select),
-        coefficient_select = !!enquo(coefficient_select)
-      )) %>% 
-      unnest(cols = c(params), keep_empty = TRUE)
-  
+  if (extract_parameters) {
+    df_fits <- df_fits |> 
+      mutate(
+        params = map(
+          fit, extract_fit_parameters, 
+          summary_select = !!enquo(summary_select),
+          coefficient_select = !!enquo(coefficient_select)
+        ),
+        # note: this is used for generate_exponential_curve to bring in
+        # some of the df phases info - potentially solve this more directly?
+        add_ons = map(
+          fit, 
+          ~if(!is.null(.x$add)) { .x$add } else { tibble() }
+        )
+      ) |>
+      unnest(cols = c(params, add_ons), keep_empty = TRUE)
+  }
+    
   # keep fit
   if (!keep_fit) 
     df_fits <- df_fits %>% select(-fit)
@@ -181,6 +204,8 @@ estimate_growth_curve_parameters <- function(
   # return result
   return(df_fits)
 }
+
+# logistic curve ==========
 
 #' Fits a logistic curve to data.
 #'
@@ -252,37 +277,6 @@ fit_logistic_curve <- function(data_t, data_n) {
   return(fit)
 }
 
-#' Extract parameter estimates and fit statistics from the logistic fit
-#' @param nls_fit the nls fit object
-#' @param coefficient_select a dplyr::select statement for the coefficient columns
-#' @param summary_select a dplyr::select statement for the fit summary columns
-#' @return a tibble with the fit parameters
-extract_logistic_fit_parameters <- function(nls_fit, summary_select = everything(), coefficient_select = everything()) {
-  
-  # safety check
-  if (is.null(nls_fit)) return(tibble())
-  
-  # extract coefficients
-  coefs <- 
-    broom::tidy(nls_fit) %>% 
-    select(term, estimate, std.error) %>% 
-    tidyr::pivot_wider(names_from = term, values_from = c(estimate, std.error)) %>% 
-    select(!!enquo(coefficient_select))
-  
-  # extract summary
-  sums <-
-    broom::glance(nls_fit) %>% 
-    select(!!enquo(summary_select))
-  
-  # safety checks
-  stopifnot(nrow(coefs) == 1L)
-  stopifnot(nrow(sums) == 1L)
-  
-  # return
-  return(dplyr::bind_cols(sums, coefs))
-}
-
-
 #' Generate logistic curve
 #' 
 #' @param time colum name for time column (newly generated)
@@ -311,4 +305,169 @@ generate_logistic_curve <- function(df, time, N, time_min = time_min, time_max =
     unnest(!!time_col) %>%
     mutate(!!N_col := !!K_col/(1 + ((!!K_col - !!N0_col)/!!N0_col) * exp(-!!r_col * !!time_col))) %>% 
     filter(!is.na(!!N_col))
+}
+
+# exponential curve ======
+
+#' Fits a an exponential curve to data.
+#'
+#' This function first uses functionality from the gcplyr package to calculate the time of the lag phase and maximum growth rate (which we denote the exponential phase) and then fits an exponential curve to this subset of the data:
+#' N(t) = N0 * exp(r * t), where
+#' N(t) is the number of cells (or density) at time t,
+#' N0 is the initial cell count or density, and
+#' r is the growth rate
+#' @param data_t    A vector of timepoints (data_n must also
+#'                  be provided and be the same length).
+#' @param data_n    A vector of cell counts or absorbance readings.
+#' @param window_width_n How many datapoints to use to calcualte derivatives
+#' @return          An object of class nls.
+fit_exponential_curve <- function(data_t, data_n, window_width_n = 7) {
+  
+  # safety checks
+  stopifnot(
+    "the input data (data_t and data_n) must be numeric vectors" = is.numeric(data_t) && is.numeric(data_n),
+    "the input data (data_t and data_n) must have the same length" = length(data_t) == length(data_n)
+  )
+
+  # create dataset
+  df <- tibble(time = data_t, N = data_n) |>
+    filter(!is.na(N), !is.na(time))
+  
+  # phases
+  df_phases <- 
+    df |>
+    # make sure data is in order by time
+    arrange(time) |>
+    # use first minimum to estimate background
+    mutate(bgrd = gcplyr::first_minima(N, return = "y")) |>
+    # focus on data points above the background
+    filter(N - bgrd > 0) |>
+    # calculate derivates with a 3 point window
+    # (ignore bgrd here to avoid issues with the log transform,
+    # this is just to find the 3-point avg max rate)
+    mutate(
+      deriv_percap = gcplyr::calc_deriv(
+        x = time, y = N, percapita = TRUE, blank = 0,
+        window_width_n = window_width_n, trans_y = "log",
+        subset_by = rep(TRUE, dplyr::n()))
+    ) |>
+    # summarize the results
+    summarise(
+      # carry through the background
+      bgrd = bgrd[1],
+      # estimate lag time
+      lag_time = gcplyr::lag_time(
+        y = N, x = time, deriv = deriv_percap, y0 = bgrd),
+      # max rate based on the above derivative
+      max_r = gcplyr::max_gc(deriv_percap),
+      # where is the max? (take the full window into consideration)
+      max_r_time = time[gcplyr::which_max_gc(deriv_percap) + floor(window_width_n/2)],
+      .groups = "drop"
+    )
+  
+  # prep data
+  df_exp <- df |>
+    # subset dataset to focus on exponential phase
+    filter(time >= df_phases$lag_time, time <= df_phases$max_r_time) |>
+    # subtract background
+    mutate(N = N - df_phases$bgrd)
+
+  # nls fit
+  fit <- 
+    tryCatch(
+      stats::nls(
+        formula = N ~ N0 * exp (r * time),#B + N0 * exp (r * time),
+        data = df_exp, 
+        #start = list(B = B_init, N0 = N0_init, r = r_init),
+        start = list(N0 = min(df_exp$N), r = df_phases$max_r),
+        control = list(maxiter = 500),
+        algorithm = "port",
+        lower = c(0, 0),
+        upper = c(max(df_exp$N), Inf),
+      ),
+      error = function(e) {
+        rlang::warn("could not fit exponential equation", parent = e)
+        rlang::abort("could not fit exponential equation", parent = e)
+      }
+    )
+
+  # return value
+  fit$add <- df_phases
+  return(fit)
+}
+
+#' Generate logistic curve
+#' 
+#' @param time colum name for time column (newly generated)
+#' @param N colum name for population size column (newly generated)
+#' @param N_max if set, will be used to freshly calculate the value in the time_max column to determine how far to plot the curves (until the specific N_max)
+#' @param time_min column name for start time of curve
+#' @param time_max column name for end time of curve
+#' @param N0 column name for initial populatio size (N0) parameter
+#' @param B column name for background (B) parameter
+#' @param r column name for growth rate (r) parameter
+generate_exponential_curve <- function(df, time, N, N_max = NULL, time_min = time_min, time_max = time_max, N0 = N0, bgrd = bgrd, r = r) {
+  
+  # safety checks
+  if (missing(time)) stop("specify a 'time' column", call. = FALSE)
+  if (missing(N)) stop("specify a population size 'N' column", call. = FALSE)
+  
+  time_col <- rlang::enexpr(time)
+  N_col <- rlang::enexpr(N)
+  time_min_col <- rlang::enexpr(time_min)
+  time_max_col <- rlang::enexpr(time_max)
+  N0_col <- rlang::enexpr(N0)
+  bgrd_col <- rlang::enexpr(bgrd)
+  r_col <- rlang::enexpr(r)
+  
+  # if N_max is set
+  if (!is.null(N_max)) {
+    df <- df |>
+      mutate(
+        !!time_max_col := log((!!N_max - !!bgrd_col)/(!!N0_col)) / (!!r_col)
+      )
+  }
+  
+  # calculate
+  df |>
+    mutate(
+      !!time_col := purrr::map2(!!time_min_col, !!time_max_col, seq, length.out = 100)
+    ) |>
+    unnest(!!time_col) |>
+    mutate(
+      !!N_col := !!bgrd_col + !!N0_col * exp (!!r_col * !!time_col)
+    ) |> 
+    filter(!is.na(!!N_col))
+}
+
+# utility functions =====
+
+#' Extract parameter estimates and fit statistics from nls fit
+#' @param fit the nls fit object
+#' @param coefficient_select a dplyr::select statement for the coefficient columns
+#' @param summary_select a dplyr::select statement for the fit summary columns
+#' @return a tibble with the fit parameters
+extract_fit_parameters <- function(fit, summary_select = everything(), coefficient_select = everything()) {
+  
+  # safety check
+  if (is.null(fit)) return(tibble())
+  
+  # extract coefficients
+  coefs <- 
+    broom::tidy(fit) %>% 
+    select(term, estimate, std.error) %>% 
+    tidyr::pivot_wider(names_from = term, values_from = c(estimate, std.error)) |>
+    select(dplyr::any_of( {{ coefficient_select }}))
+  
+  # extract summary
+  sums <-
+    broom::glance(fit) |> 
+    select(dplyr::any_of({{ summary_select }}))
+  
+  # safety checks
+  stopifnot(nrow(coefs) == 1L)
+  stopifnot(nrow(sums) == 1L)
+  
+  # return
+  return(dplyr::bind_cols(sums, coefs))
 }
